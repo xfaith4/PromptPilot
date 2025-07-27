@@ -22,7 +22,7 @@ function OpenAI_Refiner {
     - ImportExcel module (`Install-Module ImportExcel -Scope CurrentUser`)
 
 .AUTHOR
-    XFaith / ChatGPT Refined
+    XFaith / ChatGPT Refined Test
 #>
 
     # ===========================
