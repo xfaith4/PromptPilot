@@ -150,3 +150,51 @@ Enhance cost tracking
 
 
    
+
+---
+
+## Ops Telemetry Web Dashboard Prototype
+
+To support the EventLog → PostgreSQL → IIS dashboard initiative, the repository now includes a static web interface that can be hosted on IIS (or any static web server) to visualize operational telemetry sourced from PostgreSQL materialized views.
+
+### Highlights
+
+- **Realtime KPIs** for IIS 5xx spikes, authentication failures, Windows critical events, and router/syslog bursts.
+- **Actionable alert drill-down** panel with top offenders, recent timelines, and suggested runbook steps.
+- **Chart.js visualizations** (no build system required) rendering 24h trends, burst analysis, and severity heat.
+- **Ingest & scheduled task health** table wired for PowerShell-based pipeline monitoring.
+- **Auto refresh controls** (manual/interval) ready to be bound to live API endpoints.
+
+### File Layout
+
+```
+web/
+  index.html              # Dashboard shell to host on IIS (http://localhost:8088/)
+  assets/
+    css/styles.css        # Glassmorphism-inspired theme and layout rules
+    js/app.js             # Fetches dashboard JSON, renders KPIs/charts/tables
+    data/mock-metrics.json# Sample payload mirroring expected PostgreSQL API response
+```
+
+### Preview Locally
+
+1. Start a lightweight static server from the repository root:
+   ```bash
+   python -m http.server 8088
+   ```
+2. Browse to [http://localhost:8088/web/](http://localhost:8088/web/) to view the dashboard against the bundled mock data.
+
+When deploying to IIS via `Provision.ps1`, copy the `web/` directory to the IIS site root (e.g., `C:\inetpub\wwwroot\ops-telemetry`). Configure `/api/metrics` (or similar) endpoints to return the JSON schema used by `assets/data/mock-metrics.json` and adjust `app.js` to point at the live endpoint.
+
+### Wiring to PostgreSQL
+
+- Replace the `fetch('assets/data/mock-metrics.json')` call in `app.js` with your IIS-hosted API endpoint (PHP, PowerShell REST, etc.).
+- Each KPI maps to dedicated materialized views (e.g., `rpt.iis_errors_5m`, `rpt.iis_authfailures_15m`). Ensure indexes and partitions align with the JSON payload shape.
+- Scheduled PowerShell ingest tasks should write health/status rows into an `ops.ingest_health` table exposed via the same API for the "Ingest & Task Health" grid.
+
+### Next Steps
+
+- Extend `Provision.ps1` to deploy the dashboard assets, configure MIME types, and bind the IIS site to `http://localhost:8088/`.
+- Replace the mock JSON with a live API that queries PostgreSQL partitions and materialized views.
+- Add CSV export endpoints (`/api/export?metric=iis-5xx`) that stream server-side filtered results for investigations.
+- Layer in lightweight authentication (Windows Integrated or OpenID Connect) before exposing the dashboard broadly.
