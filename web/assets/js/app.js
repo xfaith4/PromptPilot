@@ -3,6 +3,7 @@ const Dashboard = (() => {
         data: null,
         charts: {},
         autoRefreshTimer: null,
+        eventSource: null,
         activeAlertId: null,
     };
 
@@ -21,8 +22,7 @@ const Dashboard = (() => {
     };
 
     const fetchData = async () => {
-        const cacheBust = `?_=${Date.now()}`;
-        const response = await fetch(`assets/data/mock-metrics.json${cacheBust}`);
+        const response = await fetch('/api/dashboard', { cache: 'no-store' });
         if (!response.ok) {
             throw new Error(`Failed to load dashboard data: ${response.status}`);
         }
@@ -347,8 +347,8 @@ const Dashboard = (() => {
     };
 
     const attachEventListeners = () => {
-        elements.applyFilters.addEventListener('click', refreshDashboard);
-        elements.manualRefresh.addEventListener('click', refreshDashboard);
+        elements.applyFilters.addEventListener('click', () => refreshDashboard({ skipFetch: true }));
+        elements.manualRefresh.addEventListener('click', () => refreshDashboard());
         elements.alertSearch.addEventListener('input', filterAlerts);
 
         document.querySelectorAll('.btn-link[data-alert-target]').forEach((btn) => {
@@ -383,9 +383,9 @@ const Dashboard = (() => {
         }
     };
 
-    const refreshDashboard = async () => {
+    const refreshDashboard = async ({ skipFetch = false } = {}) => {
         try {
-            if (!state.data) {
+            if (!skipFetch || !state.data) {
                 state.data = await fetchData();
             }
             const rangeData = getRangeData();
@@ -416,12 +416,42 @@ const Dashboard = (() => {
         }
     };
 
+    const setupRealtimeStream = () => {
+        if (state.eventSource) {
+            state.eventSource.close();
+            state.eventSource = null;
+        }
+
+        try {
+            const eventSource = new EventSource('/api/stream');
+            eventSource.onmessage = (event) => {
+                try {
+                    const payload = JSON.parse(event.data);
+                    state.data = payload;
+                    refreshDashboard({ skipFetch: true });
+                } catch (error) {
+                    console.error('Failed to parse realtime payload', error);
+                }
+            };
+            eventSource.onerror = (error) => {
+                console.error('Realtime stream disconnected', error);
+                eventSource.close();
+                state.eventSource = null;
+                setTimeout(setupRealtimeStream, 5000);
+            };
+            state.eventSource = eventSource;
+        } catch (error) {
+            console.error('Realtime stream unavailable', error);
+        }
+    };
+
     const init = async () => {
         try {
             state.data = await fetchData();
             attachEventListeners();
-            await refreshDashboard();
+            await refreshDashboard({ skipFetch: true });
             setAutoRefresh(elements.autoRefresh.value);
+            setupRealtimeStream();
         } catch (error) {
             console.error('Failed to initialize dashboard', error);
             elements.lastUpdated.textContent = 'Last updated: failed to load data';

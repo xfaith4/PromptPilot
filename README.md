@@ -198,3 +198,48 @@ When deploying to IIS via `Provision.ps1`, copy the `web/` directory to the IIS 
 - Replace the mock JSON with a live API that queries PostgreSQL partitions and materialized views.
 - Add CSV export endpoints (`/api/export?metric=iis-5xx`) that stream server-side filtered results for investigations.
 - Layer in lightweight authentication (Windows Integrated or OpenID Connect) before exposing the dashboard broadly.
+
+---
+
+## Backend Telemetry Service
+
+The repository now includes an **Express-based backend (`server/app.js`)** that binds the dashboard to live telemetry sources:
+
+- Polls **Windows Event Logs** (via PowerShell) for Critical/Error/Warning activity.
+- Tails **IIS W3C logs** for 5xx spikes and authentication failures.
+- Listens for **router/syslog** events on UDP port `514` (with automatic fall back to `5514` when elevation is unavailable).
+- Emits **Server-Sent Events (SSE)** to keep `web/index.html` updated in real time, and exposes `GET /api/dashboard` + `GET /api/health` for REST access.
+
+### Quick Start
+
+```bash
+npm install
+MOCK_MODE=1 node server/app.js
+```
+
+Visit <http://localhost:3001> to load the dashboard against synthetic mock data. Remove `MOCK_MODE=1` to run against live inputs.
+
+### Environment Variables
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `PORT` | HTTP port for Express | `3001` |
+| `WINDOWS_EVENT_LOGS` | Comma list of Event Logs to poll | `System,Application` |
+| `WINDOWS_EVENT_LEVELS` | Event levels (1–5) | `1,2,3` |
+| `WINDOWS_EVENT_INTERVAL_MS` | Poll cadence | `45000` |
+| `IIS_LOG_ROOT` | Semi-colon delimited IIS log roots | `C:\\inetpub\\logs\\LogFiles` |
+| `IIS_POLL_INTERVAL_MS` | IIS tail cadence | `30000` |
+| `SYSLOG_PORT` | UDP port for router/syslog intake | `514` |
+| `SYSLOG_FALLBACK_PORT` | Non-privileged UDP backup port | `5514` |
+| `MOCK_MODE` | Set `1` to enable synthetic telemetry | `0` |
+
+> **Note:** Running on UDP 514 or accessing protected Event Logs may require **elevated privileges**. Execute the service in an elevated PowerShell/Command prompt when binding system ports or accessing restricted logs.
+
+### Production Wiring Checklist
+
+1. **Windows Event Logs** – Ensure PowerShell 7+ is available and the executing identity can run `Get-WinEvent` across the selected logs.
+2. **IIS Logs** – Confirm the account has read access to the IIS W3C log directories and that logs are rotated with standard `#Fields` headers.
+3. **Router Syslog** – Point routers/firewalls to the host running this service on UDP 514 (or the configured fallback). Firewall rules must allow inbound UDP.
+4. **Dashboard Deployment** – Host `web/` behind IIS (or another web server) and reverse-proxy `/api/*` to the Node service, or serve the static assets directly from Express.
+
+With those hooks in place, the dashboard will automatically surface live metrics, realtime alerts, and ingestion health without manual JSON refreshes.

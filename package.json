@@ -1,0 +1,19 @@
+{
+  "name": "ops-telemetry-control-room",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Realtime Ops Telemetry Control Room backend and dashboard bindings.",
+  "main": "server/app.js",
+  "scripts": {
+    "start": "node server/app.js",
+    "dev": "NODE_ENV=development nodemon server/app.js"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.12",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}

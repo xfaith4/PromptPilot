@@ -10,9 +10,9 @@ function OpenAI_Refiner {
     - Logs all session metadata into an Excel file for long-term cost tracking.
     - Early stopping detection based on response content
     - Fallback to truncation if AI folder naming fails
-    - Configurable refinement goals 
-    - Retry logic for API calls 
-    - Logging of all operations 
+    - Configurable refinement goals
+    - Retry logic for API calls
+    - Logging of all operations
     - Uses a cheaper model for folder naming to save costs.
 
 .PARAMETER OpenAIKey
@@ -78,7 +78,7 @@ Refine this response further by:
     $SessionsPath = Join-Path $Config.BaseExportPath "\Sessions"
     if (-not (Test-Path $SessionsPath)) {
         New-Item -ItemType Directory -Path $SessionsPath -Force | Out-Null
-    }   
+    }
 
     # ===========================
     # LOGGING FUNCTION
@@ -339,8 +339,11 @@ $Response
         $TotalTokenUsage += $InitialCall.TotalTokens
         $TotalPromptTokens += $InitialCall.PromptTokens
         $TotalCompletionTokens += $InitialCall.CompletionTokens
-
-        $EffectiveIterations = ($InitialResponse.Length -lt 100) ? 1 : $Config.RefinementIterations
+if ($null -eq $InitialResponse -or $InitialResponse.Length -lt 100) {
+    $EffectiveIterations = 1
+} else {
+    $EffectiveIterations = $Config.RefinementIterations
+}
 
         Write-Log "Initial GPT Response: $InitialResponse" "SUCCESS"
         Save-IterationOutput -IterationNumber 0 -Prompt $UserPrompt -Response $InitialResponse -SessionFolder $SessionFolder
