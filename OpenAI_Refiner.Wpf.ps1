@@ -175,16 +175,14 @@ Output only the refined prompt, in Markdown, starting with a short one-line desc
 Do not include your own commentary or analysis, only the final prompt the user should copy/paste into their coding assistant.
 "@
 
-        $combinedInput = @"
-System instructions:
-$systemInstructions
-
-$userContent
-"@
+        $messages = @(
+            @{ role = 'system'; content = $systemInstructions },
+            @{ role = 'user'; content = $userContent }
+        )
 
         $body = @{
             model = $Model
-            input = $combinedInput
+            messages = $messages
         } | ConvertTo-Json -Depth 5
 
         $headers = @{
@@ -195,14 +193,14 @@ $userContent
         Show-Status -Message ("Calling OpenAI (iteration {0}/{1})..." -f $i, $Iterations)
 
         $response = Invoke-RestMethod -Method Post `
-            -Uri "https://api.openai.com/v1/responses" `
+            -Uri "https://api.openai.com/v1/chat/completions" `
             -Headers $headers `
             -Body $body
 
-        # Extract the text result from the responses API structure
+        # Extract the text result from the chat completions API structure
         $text = $null
-        if ($response.output -and $response.output[0].content) {
-            $text = ($response.output[0].content | Where-Object { $_.type -eq 'output_text' }).text
+        if ($response.choices -and $response.choices[0].message) {
+            $text = $response.choices[0].message.content
         }
 
         if (-not $text) {
@@ -213,8 +211,8 @@ $userContent
 
         # Token usage (if present)
         if ($response.usage) {
-            $inTokens  = [int]$response.usage.input_tokens
-            $outTokens = [int]$response.usage.output_tokens
+            $inTokens  = [int]$response.usage.prompt_tokens
+            $outTokens = [int]$response.usage.completion_tokens
             $totalInputTokens  += $inTokens
             $totalOutputTokens += $outTokens
         }
@@ -270,9 +268,13 @@ function Invoke-OpenAIAnswer {
         $Prompt
     }
 
+    $messages = @(
+        @{ role = 'user'; content = $promptWithContext }
+    )
+
     $body = @{
         model = $Model
-        input = $promptWithContext
+        messages = $messages
     } | ConvertTo-Json -Depth 5
 
     $headers = @{
@@ -281,13 +283,13 @@ function Invoke-OpenAIAnswer {
     }
 
     $response = Invoke-RestMethod -Method Post `
-        -Uri "https://api.openai.com/v1/responses" `
+        -Uri "https://api.openai.com/v1/chat/completions" `
         -Headers $headers `
         -Body $body
 
     $text = $null
-    if ($response.output -and $response.output[0].content) {
-        $text = ($response.output[0].content | Where-Object { $_.type -eq 'output_text' }).text
+    if ($response.choices -and $response.choices[0].message) {
+        $text = $response.choices[0].message.content
     }
 
     if (-not $text) {
@@ -297,8 +299,8 @@ function Invoke-OpenAIAnswer {
     $totalInputTokens  = 0
     $totalOutputTokens = 0
     if ($response.usage) {
-        $totalInputTokens  = [int]$response.usage.input_tokens
-        $totalOutputTokens = [int]$response.usage.output_tokens
+        $totalInputTokens  = [int]$response.usage.prompt_tokens
+        $totalOutputTokens = [int]$response.usage.completion_tokens
     }
 
     $totalTokens = $totalInputTokens + $totalOutputTokens
