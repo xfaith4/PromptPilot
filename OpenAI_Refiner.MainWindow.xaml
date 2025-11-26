@@ -43,8 +43,20 @@
                              AcceptsReturn="True"
                              VerticalScrollBarVisibility="Auto"
                              TextWrapping="Wrap"
-                             MinHeight="120"
+                             MinHeight="80"
                              Margin="4" />
+                </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Project Context (optional)" Margin="0,0,0,8">
+                <Grid>
+                    <TextBox Name="ProjectContextTextBox"
+                             AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto"
+                             TextWrapping="Wrap"
+                             MinHeight="60"
+                             Margin="4"
+                             ToolTip="Optional context about your project. Leave empty to use the default System Dashboard context." />
                 </Grid>
             </GroupBox>
 
