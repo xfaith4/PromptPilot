@@ -77,6 +77,7 @@ function Invoke-OpenAIRefinement {
     .DESCRIPTION
         - Uses the model requested by the caller (default gpt-4.1-mini).
         - On each iteration, sends the current draft plus explicit refinement goals.
+        - Transforms rough prompts into structured, production-grade task descriptions.
         - Returns the final prompt text and a list of iterations.
 
     .OUTPUTS
@@ -92,7 +93,8 @@ function Invoke-OpenAIRefinement {
         [Parameter()][string]$RefinementGoals,
         [Parameter()][string]$FilePath,
         [Parameter()][int]$Iterations = 3,
-        [Parameter()][string]$Model = 'gpt-4.1-mini'
+        [Parameter()][string]$Model = 'gpt-4.1-mini',
+        [Parameter()][string]$ProjectContext = ''
     )
 
     $apiKey = $env:OPENAI_API_KEY
@@ -113,26 +115,71 @@ function Invoke-OpenAIRefinement {
     $totalInputTokens  = 0
     $totalOutputTokens = 0
 
-    for ($i = 1; $i -le $Iterations; $i++) {
-        $systemInstructions = @"
-You are a world-class prompt engineer.
-Your job is to iteratively refine the user's draft instruction into a clear, unambiguous, high-signal prompt.
+    # Fixed system message for the Prompt Refiner
+    $systemInstructions = @"
+You are a senior prompt architect for coding assistants (e.g., GitHub Copilot, Claude, ChatGPT Code).
+Your job is to transform rough, underspecified user prompts into high-quality, production-grade task
+descriptions that coding agents can execute reliably.
 
-Refinement goals (may be empty):
+Always:
+- Preserve the user's core intent.
+- Clarify role, goals, inputs, outputs, and constraints.
+- Add structure that makes it easy for the coding agent to follow (headings, bullet points, clear sections).
+- Avoid adding fictional requirements; only infer what is strongly implied by the user's text.
+
+Assume the user is a technically proficient engineer working on a home-lab / monitoring / automation project.
+Prefer precise, direct language over marketing fluff.
+"@
+
+    # Default project context if not provided
+    $defaultProjectContext = @"
+Project context (for reference while refining the prompt):
+
+- This project is a System Dashboard for a single home lab machine and its router.
+- It collects Windows Event Logs, system metrics, router client data, and syslogs.
+- The user is a senior cloud engineer comfortable with PowerShell, .NET, and basic web dev.
+- The codebase should prioritize robustness, maintainability, and observability over clever tricks.
+
+Use this context to make the refined prompts more concrete and useful, but do not restate it verbatim unless it helps clarify the user's intent.
+"@
+
+    $effectiveProjectContext = if ($ProjectContext) { $ProjectContext } else { $defaultProjectContext }
+
+    for ($i = 1; $i -le $Iterations; $i++) {
+        # Build the user-side transformation template
+        $userContent = @"
+$effectiveProjectContext
+
+You are refining a rough prompt that will be sent to a coding assistant like GitHub Copilot.
+
+Original rough prompt:
+---
+$currentDraft
+---
+
+Transform this into a single, well-structured prompt with the following sections:
+
+1. Role: Describe who the coding assistant should act as.
+2. Goals: Bullet list of what the user is trying to achieve.
+3. Context: Any relevant background that will help (assume a System Dashboard / home-lab monitoring project if not specified).
+4. Deliverables: Exact formats or artifacts the coding assistant should produce.
+5. Constraints and style: Technical constraints (language, stack, performance, safety) and writing/style preferences if present or implied.
+
+Additional refinement goals (may be empty):
 $RefinementGoals
 
 If a file path is provided, assume the runtime system can handle uploads or references:
 $FilePath
 
-Output only the refined prompt text. Do not include commentary, headers, or explanation.
+Output only the refined prompt, in Markdown, starting with a short one-line description and then the sections above.
+Do not include your own commentary or analysis, only the final prompt the user should copy/paste into their coding assistant.
 "@
 
         $combinedInput = @"
 System instructions:
 $systemInstructions
 
-Current draft prompt:
-$currentDraft
+$userContent
 "@
 
         $body = @{
@@ -291,6 +338,7 @@ $window = [Windows.Markup.XamlReader]::Load($reader)
 # Cache controls we need to interact with
 $script:PromptTextBox      = $window.FindName('PromptTextBox')
 $script:GoalsTextBox       = $window.FindName('GoalsTextBox')
+$script:ProjectContextTextBox = $window.FindName('ProjectContextTextBox')
 $script:FilePathTextBox    = $window.FindName('FilePathTextBox')
 $script:BrowseButton       = $window.FindName('BrowseButton')
 $script:RunButton          = $window.FindName('RunButton')
@@ -322,10 +370,11 @@ if (-not $script:ClearLogButton)     { throw "Failed to find ClearLogButton in X
 # Seed refinement goals with something sensible
 if (-not $script:GoalsTextBox.Text) {
     $script:GoalsTextBox.Text = @"
-- Remove ambiguity and clarify constraints
-- Make the task explicit, with clear inputs and outputs
-- Preserve the user's intent and technical context
-- Keep the length compact but not at the expense of clarity
+- Preserve the user's core intent
+- Clarify role, goals, inputs, outputs, and constraints
+- Add structure that makes it easy for coding agents to follow
+- Avoid adding fictional requirements; only infer what is strongly implied
+- Prefer precise, direct language over marketing fluff
 "@
 }
 
@@ -370,6 +419,7 @@ function Run-Refinement {
     }
 
     $goals   = $script:GoalsTextBox.Text
+    $projectContext = $script:ProjectContextTextBox.Text
     $file    = $script:FilePathTextBox.Text
     $model   = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { 'gpt-4.1-mini' }
 
@@ -386,6 +436,7 @@ function Run-Refinement {
     try {
         $result = Invoke-OpenAIRefinement -BasePrompt $basePrompt `
                                           -RefinementGoals $goals `
+                                          -ProjectContext $projectContext `
                                           -FilePath $file `
                                           -Iterations $iterations `
                                           -Model $model
