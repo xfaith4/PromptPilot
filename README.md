@@ -1,4 +1,4 @@
-# OpenAI Refiner  
+# OpenAI Refiner
 
 [![PowerShell](https://img.shields.io/badge/PowerShell-7+-blue.svg)](https://learn.microsoft.com/en-us/powershell/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-API-green.svg)](https://platform.openai.com/)
@@ -10,14 +10,14 @@
 
 ---
 
-OpenAI Refiner is a **PowerShell-based interactive refinement tool** for OpenAI prompts.  
+OpenAI Refiner is a **PowerShell-based interactive refinement tool** for OpenAI prompts.
 
-- Iteratively improves prompts with multiple refinement passes  
-- Prevents truncation with **dynamic max_token scaling**  
-- Saves each iteration in **AI-generated session folders**  
-- Tracks **token usage & estimated costs**  
-- Logs all sessions into an **Excel summary for long-term cost tracking**  
-- Detects when further refinements are **not meaningful** and stops early  
+- Iteratively improves prompts with multiple refinement passes
+- Prevents truncation with **dynamic max_token scaling**
+- Saves each iteration in **AI-generated session folders**
+- Tracks **token usage & estimated costs**
+- Logs all sessions into an **Excel summary for long-term cost tracking**
+- Detects when further refinements are **not meaningful** and stops early
 - Includes a **WPF desktop UI** for click-to-run refinement and execution
 
 It’s designed for **script developers, documentation writers, and anyone refining complex prompts** while keeping costs transparent.
@@ -33,7 +33,9 @@ It’s designed for **script developers, documentation writers, and anyone refin
 - **Clipboard + file picker**: copy final prompt; browse for files.
 
 Run (Windows, STA required):
+
 ```powershell
+
 powershell.exe -NoProfile -sta -File .\OpenAI_Refiner.Wpf.ps1
 # or
 pwsh -NoProfile -sta -File .\OpenAI_Refiner.Wpf.ps1
@@ -47,10 +49,10 @@ Here’s what a typical refinement session looks like:
 
 ![OpenAI Refiner Example Screenshot](docs/example-session.png)
 
-- AI-generated folder name  
-- Iterations saved as `Iteration_X.txt`  
-- Token + cost tracked automatically  
-- Session summary logged in Excel  
+- AI-generated folder name
+- Iterations saved as `Iteration_X.txt`
+- Token + cost tracked automatically
+- Session summary logged in Excel
 
 ---
 
@@ -67,26 +69,26 @@ Iteration_2.txt
 OpenAI_Refiner.log
 OpenAI_SessionSummary.xlsx
 
-- **`Iteration_X.txt`** → Prompt + refined response  
-- **`OpenAI_Refiner.log`** → Timestamped log of all operations  
-- **`OpenAI_SessionSummary.xlsx`** → Running historical cost + token summary  
+- **`Iteration_X.txt`** → Prompt + refined response
+- **`OpenAI_Refiner.log`** → Timestamped log of all operations
+- **`OpenAI_SessionSummary.xlsx`** → Running historical cost + token summary
 
 ---
 
-- **`Iteration_X.txt`** → Prompt + refined response  
-- **`OpenAI_Refiner.log`** → Timestamped log of all operations  
-- **`OpenAI_SessionSummary.xlsx`** → Running historical cost + token summary  
+- **`Iteration_X.txt`** → Prompt + refined response
+- **`OpenAI_Refiner.log`** → Timestamped log of all operations
+- **`OpenAI_SessionSummary.xlsx`** → Running historical cost + token summary
 
 ---
 
-##  Installation
+## Installation
 
-1. **Install PowerShell 7+ (recommended)**  
+1. **Install PowerShell 7+ (recommended)**
    Works with Windows PowerShell 5.1, but Core 7+ is preferred.
 
-2. **Install the ImportExcel module (required for Excel tracking)**  
+2. **Install the ImportExcel module (required for Excel tracking)**
    Install-Module ImportExcel -Scope CurrentUser
-   
+
 3. **Set your OpenAI API key**
   $env:OpenAIKey = "your-openai-api-key"
 
@@ -97,6 +99,7 @@ OpenAI_SessionSummary.xlsx
   .\OpenAI_Refiner.ps1
 
 ***Configuration***
+
 | Setting                   | Description                                      |
 | ------------------------- | ------------------------------------------------ |
 | `DefaultModel`            | OpenAI model (default: `gpt-4.1-mini`)           |
@@ -140,9 +143,9 @@ It automatically appends a record into:
 OpenAI_SessionSummary.xlsx
 Example Excel Output:
 
-Date	SessionFolder	Model	IterationsRun	PromptTokens	CompletionTokens	TotalTokens	CostUSD
-2025-07-27 15:30	20250727_153045_GenesysLogin_GUI	gpt-4.1-mini	5	1200	3300	4500	0.024
-2025-07-27 16:10	20250727_161012_PythonHello	gpt-4.1-mini	1	300	200	500	0.003
+Date SessionFolder Model IterationsRun PromptTokens CompletionTokens TotalTokens CostUSD
+2025-07-27 15:30 20250727_153045_GenesysLogin_GUI gpt-4.1-mini 5 1200 3300 4500 0.024
+2025-07-27 16:10 20250727_161012_PythonHello gpt-4.1-mini 1 300 200 500 0.003
 
 **Roadmap**
  Auto-detect truncation → ask GPT to continue from where it left off
@@ -170,10 +173,6 @@ Enhance cost tracking
 ## Testing
 
 - `OpenAI_Refiner.Wpf.ps1`: parsed with `PSParser` (syntax OK). Full UI run not performed here; run on Windows with `-sta` to validate end-to-end.
-
-
-
-   
 
 ---
 
@@ -203,9 +202,11 @@ web/
 ### Preview Locally
 
 1. Start a lightweight static server from the repository root:
+
    ```bash
    python -m http.server 8088
    ```
+
 2. Browse to [http://localhost:8088/web/](http://localhost:8088/web/) to view the dashboard against the bundled mock data.
 
 When deploying to IIS via `Provision.ps1`, copy the `web/` directory to the IIS site root (e.g., `C:\inetpub\wwwroot\ops-telemetry`). Configure `/api/metrics` (or similar) endpoints to return the JSON schema used by `assets/data/mock-metrics.json` and adjust `app.js` to point at the live endpoint.
