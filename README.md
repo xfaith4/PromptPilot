@@ -18,10 +18,28 @@ OpenAI Refiner is a **PowerShell-based interactive refinement tool** for OpenAI 
 - Tracks **token usage & estimated costs**  
 - Logs all sessions into an **Excel summary for long-term cost tracking**  
 - Detects when further refinements are **not meaningful** and stops early  
+- Includes a **WPF desktop UI** for click-to-run refinement and execution
 
 It’s designed for **script developers, documentation writers, and anyone refining complex prompts** while keeping costs transparent.
 
 ---
+
+## WPF Desktop App (OpenAI_Refiner.Wpf.ps1)
+
+- **Mode toggle**: Refine Prompt vs Answer Task, plus “Use this Prompt” to flow from refinement into execution.
+- **Iterations + model controls**: choose pass count and model; optional file path for context.
+- **Outputs**: refined prompt, iteration history (with scrollbars), task output pane (Answer mode).
+- **Activity log + busy indicator**: shows when work is running; buttons disable during calls; “Clear Log” to reset.
+- **Clipboard + file picker**: copy final prompt; browse for files.
+
+Run (Windows, STA required):
+```powershell
+powershell.exe -NoProfile -sta -File .\OpenAI_Refiner.Wpf.ps1
+# or
+pwsh -NoProfile -sta -File .\OpenAI_Refiner.Wpf.ps1
+```
+
+> Screenshots not included in this repository update; capture the window after launch to document your environment.
 
 ## Screenshot / Example Run
 
@@ -146,6 +164,12 @@ Pull requests welcome!
 Improve AI folder naming
 Add new output formats
 Enhance cost tracking
+
+---
+
+## Testing
+
+- `OpenAI_Refiner.Wpf.ps1`: parsed with `PSParser` (syntax OK). Full UI run not performed here; run on Windows with `-sta` to validate end-to-end.
 
 
 

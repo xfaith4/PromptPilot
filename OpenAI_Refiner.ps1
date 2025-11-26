@@ -10,9 +10,9 @@ function OpenAI_Refiner {
     - Logs all session metadata into an Excel file for long-term cost tracking.
     - Early stopping detection based on response content
     - Fallback to truncation if AI folder naming fails
-    - Configurable refinement goals 
-    - Retry logic for API calls 
-    - Logging of all operations 
+    - Configurable refinement goals
+    - Retry logic for API calls
+    - Logging of all operations
     - Uses a cheaper model for folder naming to save costs.
 
 .PARAMETER OpenAIKey
@@ -30,7 +30,7 @@ function OpenAI_Refiner {
     # ===========================
     $Config = @{
         OpenAIEndpoint          = "https://api.openai.com/v1/chat/completions"
-        ApiKey                  = $env:OpenAIKey
+        ApiKey                  = $env:OPENAI_API_KEY
         BaseExportPath          = $env:OpenAI_Refiner_Dir
         DefaultModel            = "gpt-4.1-mini"
         DefaultMaxTokens        = 4096
@@ -78,7 +78,7 @@ Refine this response further by:
     $SessionsPath = Join-Path $Config.BaseExportPath "\Sessions"
     if (-not (Test-Path $SessionsPath)) {
         New-Item -ItemType Directory -Path $SessionsPath -Force | Out-Null
-    }   
+    }
 
     # ===========================
     # LOGGING FUNCTION
