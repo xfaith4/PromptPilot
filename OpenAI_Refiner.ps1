@@ -339,8 +339,11 @@ $Response
         $TotalTokenUsage += $InitialCall.TotalTokens
         $TotalPromptTokens += $InitialCall.PromptTokens
         $TotalCompletionTokens += $InitialCall.CompletionTokens
-
-        $EffectiveIterations = ($InitialResponse.Length -lt 100) ? 1 : $Config.RefinementIterations
+if ($null -eq $InitialResponse -or $InitialResponse.Length -lt 100) {
+    $EffectiveIterations = 1
+} else {
+    $EffectiveIterations = $Config.RefinementIterations
+}
 
         Write-Log "Initial GPT Response: $InitialResponse" "SUCCESS"
         Save-IterationOutput -IterationNumber 0 -Prompt $UserPrompt -Response $InitialResponse -SessionFolder $SessionFolder
