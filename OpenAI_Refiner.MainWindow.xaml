@@ -3,6 +3,8 @@
         Title="OpenAI Prompt Refiner (WPF)"
         Height="900"
         Width="1100"
+        MinHeight="600"
+        MinWidth="800"
         WindowStartupLocation="CenterScreen">
     <Grid Margin="8">
         <Grid.RowDefinitions>
@@ -25,157 +27,158 @@
                    Margin="0,0,0,8" />
 
         <!-- Left side: Inputs -->
-        <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,8,0">
-            <GroupBox Header="Base Prompt" Margin="0,0,0,8">
-                <Grid>
-                    <TextBox Name="PromptTextBox"
-                             AcceptsReturn="True"
-                             VerticalScrollBarVisibility="Auto"
-                             TextWrapping="Wrap"
-                             MinHeight="150"
-                             Margin="4" />
-                </Grid>
-            </GroupBox>
-
-            <GroupBox Header="Refinement Goals" Margin="0,0,0,8">
-                <Grid>
-                    <TextBox Name="GoalsTextBox"
-                             AcceptsReturn="True"
-                             VerticalScrollBarVisibility="Auto"
-                             TextWrapping="Wrap"
-                             MinHeight="80"
-                             Margin="4" />
-                </Grid>
-            </GroupBox>
-
-            <GroupBox Header="Project Context (optional)" Margin="0,0,0,8">
-                <Grid>
-                    <TextBox Name="ProjectContextTextBox"
-                             AcceptsReturn="True"
-                             VerticalScrollBarVisibility="Auto"
-                             TextWrapping="Wrap"
-                             MinHeight="60"
-                             Margin="4"
-                             ToolTip="Optional context about your project. Leave empty to use the default System Dashboard context." />
-                </Grid>
-            </GroupBox>
-
-            <GroupBox Header="File (optional)" Margin="0,0,0,8">
-                <Grid Margin="4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-
-                    <TextBox Name="FilePathTextBox"
-                             Grid.Column="0"
-                             Margin="0,0,4,0" />
-
-                    <Button Name="BrowseButton"
-                            Grid.Column="1"
-                            Content="Browse..."
-                            Padding="10,4" />
-                </Grid>
-            </GroupBox>
-
-            <GroupBox Header="Mode" Margin="0,0,0,8">
-                <StackPanel Margin="4">
-                    <StackPanel Orientation="Horizontal">
-                        <RadioButton Name="ModeRefineRadio"
-                                     Content="Refine Prompt"
-                                     IsChecked="True"
-                                     Margin="0,0,12,0" />
-                        <RadioButton Name="ModeAnswerRadio"
-                                     Content="Answer Task" />
-                        <Button Name="UsePromptButton"
-                                Content="Use this Prompt"
-                                Padding="12,4"
-                                Margin="12,0,0,0" />
-                    </StackPanel>
-                    <TextBlock Text="Refine improves wording; Answer runs the task."
-                               Margin="0,4,0,0"
-                               Foreground="Gray"
-                               FontSize="12" />
+        <DockPanel Grid.Row="1" Grid.Column="0" Margin="0,0,8,0">
+            <!-- Action buttons docked at bottom - always visible -->
+            <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,8">
+                    <TextBlock Text="Iterations:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,4,0" />
+                    <TextBox Name="IterationsTextBox"
+                             Width="40"
+                             Text="3"
+                             Margin="0,0,12,0" />
+                    <TextBlock Text="Model:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,4,0" />
+                    <TextBox Name="ModelTextBox"
+                             Width="120"
+                             Text="gpt-4.1-mini" />
                 </StackPanel>
-            </GroupBox>
 
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="Iterations:"
-                           VerticalAlignment="Center"
-                           Margin="0,0,4,0" />
-                <TextBox Name="IterationsTextBox"
-                         Width="40"
-                         Text="3"
-                         Margin="0,0,12,0" />
-                <TextBlock Text="Model:"
-                           VerticalAlignment="Center"
-                           Margin="0,0,4,0" />
-                <TextBox Name="ModelTextBox"
-                         Width="120"
-                         Text="gpt-4.1-mini" />
+                <StackPanel Orientation="Horizontal">
+                    <Button Name="RunButton"
+                            Content="Run Refinement"
+                            Padding="14,6"
+                            Margin="0,0,8,0" />
+                    <Button Name="CopyButton"
+                            Content="Copy Final Prompt"
+                            Padding="14,6" />
+                </StackPanel>
             </StackPanel>
 
-            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                <Button Name="RunButton"
-                        Content="Run Refinement"
-                        Padding="14,6"
-                        Margin="0,0,8,0" />
-                <Button Name="CopyButton"
-                        Content="Copy Final Prompt"
-                        Padding="14,6" />
-            </StackPanel>
-        </StackPanel>
+            <!-- Scrollable input fields -->
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
+                    <GroupBox Header="Base Prompt" Margin="0,0,0,8">
+                        <TextBox Name="PromptTextBox"
+                                 AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Auto"
+                                 TextWrapping="Wrap"
+                                 Height="150"
+                                 Margin="4" />
+                    </GroupBox>
+
+                    <GroupBox Header="Refinement Goals" Margin="0,0,0,8">
+                        <TextBox Name="GoalsTextBox"
+                                 AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Auto"
+                                 TextWrapping="Wrap"
+                                 Height="80"
+                                 Margin="4" />
+                    </GroupBox>
+
+                    <GroupBox Header="Project Context (optional)" Margin="0,0,0,8">
+                        <TextBox Name="ProjectContextTextBox"
+                                 AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Auto"
+                                 TextWrapping="Wrap"
+                                 Height="60"
+                                 Margin="4"
+                                 ToolTip="Optional context about your project. Leave empty to use the default System Dashboard context." />
+                    </GroupBox>
+
+                    <GroupBox Header="File (optional)" Margin="0,0,0,8">
+                        <Grid Margin="4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox Name="FilePathTextBox"
+                                     Grid.Column="0"
+                                     Margin="0,0,4,0" />
+
+                            <Button Name="BrowseButton"
+                                    Grid.Column="1"
+                                    Content="Browse..."
+                                    Padding="10,4" />
+                        </Grid>
+                    </GroupBox>
+
+                    <GroupBox Header="Mode" Margin="0,0,0,8">
+                        <StackPanel Margin="4">
+                            <StackPanel Orientation="Horizontal">
+                                <RadioButton Name="ModeRefineRadio"
+                                             Content="Refine Prompt"
+                                             IsChecked="True"
+                                             Margin="0,0,12,0" />
+                                <RadioButton Name="ModeAnswerRadio"
+                                             Content="Answer Task" />
+                                <Button Name="UsePromptButton"
+                                        Content="Use this Prompt"
+                                        Padding="12,4"
+                                        Margin="12,0,0,0" />
+                            </StackPanel>
+                            <TextBlock Text="Refine improves wording; Answer runs the task."
+                                       Margin="0,4,0,0"
+                                       Foreground="Gray"
+                                       FontSize="12" />
+                        </StackPanel>
+                    </GroupBox>
+                </StackPanel>
+            </ScrollViewer>
+        </DockPanel>
 
         <!-- Right side: Output -->
-        <StackPanel Grid.Row="1" Grid.Column="1">
-            <GroupBox Header="Refined Prompt (final)">
-                <Grid>
+        <ScrollViewer Grid.Row="1" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+                <GroupBox Header="Refined Prompt (final)">
                     <TextBox Name="FinalPromptTextBox"
                              IsReadOnly="True"
                              AcceptsReturn="True"
                              VerticalScrollBarVisibility="Auto"
                              TextWrapping="Wrap"
-                             MinHeight="200"
+                             Height="200"
                              Margin="4" />
-                </Grid>
-            </GroupBox>
+                </GroupBox>
 
-            <GroupBox Header="Iteration History" Margin="0,8,0,0">
-                <Grid>
+                <GroupBox Header="Iteration History" Margin="0,8,0,0">
                     <TextBox Name="HistoryTextBox"
                              IsReadOnly="True"
                              AcceptsReturn="True"
                              VerticalScrollBarVisibility="Auto"
                              HorizontalScrollBarVisibility="Auto"
                              TextWrapping="Wrap"
+                             Height="150"
                              Margin="4" />
-                </Grid>
-            </GroupBox>
+                </GroupBox>
 
-            <GroupBox Header="Task Output (Answer mode)" Margin="0,8,0,0">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,4,4,0">
-                        <Button Name="CopyTaskOutputButton"
-                                Content="Copy Task Output"
-                                Padding="10,4"
-                                HorizontalAlignment="Left" />
-                    </StackPanel>
-                    <TextBox Grid.Row="1"
-                             Name="TaskOutputTextBox"
-                             IsReadOnly="True"
-                             AcceptsReturn="True"
-                             VerticalScrollBarVisibility="Visible"
-                             HorizontalScrollBarVisibility="Auto"
-                             TextWrapping="Wrap"
-                             MinHeight="160"
-                             Margin="4" />
-                </Grid>
-            </GroupBox>
-        </StackPanel>
+                <GroupBox Header="Task Output (Answer mode)" Margin="0,8,0,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,4,4,0">
+                            <Button Name="CopyTaskOutputButton"
+                                    Content="Copy Task Output"
+                                    Padding="10,4"
+                                    HorizontalAlignment="Left" />
+                        </StackPanel>
+                        <TextBox Grid.Row="1"
+                                 Name="TaskOutputTextBox"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Visible"
+                                 HorizontalScrollBarVisibility="Auto"
+                                 TextWrapping="Wrap"
+                                 Height="160"
+                                 Margin="4" />
+                    </Grid>
+                </GroupBox>
+            </StackPanel>
+        </ScrollViewer>
 
         <!-- Activity log -->
         <GroupBox Grid.Row="2" Grid.ColumnSpan="2" Header="Activity Log" Margin="0,8,0,0">
