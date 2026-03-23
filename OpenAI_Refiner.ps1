@@ -32,14 +32,14 @@ function OpenAI_Refiner {
         OpenAIEndpoint          = "https://api.openai.com/v1/chat/completions"
         ApiKey                  = $env:OPENAI_API_KEY
         BaseExportPath          = $env:OpenAI_Refiner_Dir
-        DefaultModel            = "gpt-4.1-mini"
+        DefaultModel            = "gpt-5-mini"
         DefaultMaxTokens        = 4096
         DefaultTemperature      = 0.6
         RefinementIterations    = 5
         RetryCount              = 3
         RetryDelaySeconds       = 5
         SessionSummaryFile      = "OpenAI_SessionSummary.xlsx"  # Excel summary file
-        FolderNameModel         = "gpt-4o-mini"                # Cheaper model for folder naming
+        FolderNameModel         = "gpt-5-mini"                # Cheaper model for folder naming
         RefinementGoalsTemplate = @"
 Refine this response further by:
 1. Expanding with more useful details or context.

@@ -1,10 +1,10 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="OpenAI Prompt Refiner (WPF)"
-        Height="900"
+        Height="940"
         Width="1100"
-        MinHeight="600"
-        MinWidth="800"
+        MinHeight="640"
+        MinWidth="820"
         WindowStartupLocation="CenterScreen">
     <Grid Margin="8">
         <Grid.RowDefinitions>
@@ -28,8 +28,11 @@
 
         <!-- Left side: Inputs -->
         <DockPanel Grid.Row="1" Grid.Column="0" Margin="0,0,8,0">
+
             <!-- Action buttons docked at bottom - always visible -->
             <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+
+                <!-- Row 1: Run settings -->
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,8">
                     <TextBlock Text="Iterations:"
                                VerticalAlignment="Center"
@@ -43,17 +46,45 @@
                                Margin="0,0,4,0" />
                     <TextBox Name="ModelTextBox"
                              Width="120"
-                             Text="gpt-4.1-mini" />
+                             Text="gpt-5-mini" />
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal">
+                <!-- Row 2: Primary action buttons -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                     <Button Name="RunButton"
                             Content="Run Refinement"
                             Padding="14,6"
                             Margin="0,0,8,0" />
                     <Button Name="CopyButton"
                             Content="Copy Final Prompt"
-                            Padding="14,6" />
+                            Padding="14,6"
+                            Margin="0,0,8,0" />
+                    <!-- [4] Accept Current Draft: enabled only while a refinement run is in progress -->
+                    <Button Name="AcceptIterationButton"
+                            Content="Accept Current Draft"
+                            Padding="10,6"
+                            IsEnabled="False"
+                            ToolTip="Copy the latest iteration draft to the prompt box and stop further iterations." />
+                </StackPanel>
+
+                <!-- Row 3: Preset and session management -->
+                <StackPanel Orientation="Horizontal">
+                    <!-- [6] Preset buttons -->
+                    <Button Name="SavePresetButton"
+                            Content="Save Preset"
+                            Padding="10,4"
+                            Margin="0,0,8,0"
+                            ToolTip="Save current Model, Iterations, Goals and Project Context to a JSON file." />
+                    <Button Name="LoadPresetButton"
+                            Content="Load Preset"
+                            Padding="10,4"
+                            Margin="0,0,8,0"
+                            ToolTip="Restore Model, Iterations, Goals and Project Context from a JSON preset file." />
+                    <!-- [9] Clear session API key -->
+                    <Button Name="ClearSessionKeyButton"
+                            Content="Clear Session Key"
+                            Padding="10,4"
+                            ToolTip="Discard the API key entered this session. The environment variable (if set) will still be used." />
                 </StackPanel>
             </StackPanel>
 
@@ -97,7 +128,8 @@
 
                             <TextBox Name="FilePathTextBox"
                                      Grid.Column="0"
-                                     Margin="0,0,4,0" />
+                                     Margin="0,0,4,0"
+                                     ToolTip="File must exist and be smaller than 512 KB." />
 
                             <Button Name="BrowseButton"
                                     Grid.Column="1"
@@ -208,11 +240,38 @@
             <StatusBarItem>
                 <TextBlock Name="StatusTextBlock" Text="Ready." />
             </StatusBarItem>
+            <Separator />
+            <!-- [3] Busy indicator and Cancel button -->
             <StatusBarItem>
                 <TextBlock Name="BusyIndicatorTextBlock"
                            Text="Running..."
                            Visibility="Collapsed"
-                           FontWeight="Bold" />
+                           FontWeight="Bold"
+                           Foreground="DarkOrange" />
+            </StatusBarItem>
+            <StatusBarItem>
+                <!-- Enabled only while a run is in progress -->
+                <Button Name="CancelButton"
+                        Content="Cancel"
+                        Padding="8,2"
+                        IsEnabled="False"
+                        ToolTip="Request cancellation after the current API call completes." />
+            </StatusBarItem>
+            <Separator />
+            <!-- [7] File logging controls -->
+            <StatusBarItem>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <CheckBox Name="LogToFileCheckBox"
+                              Content="Log to file"
+                              VerticalAlignment="Center"
+                              Margin="0,0,6,0"
+                              ToolTip="When checked, all log entries are also appended to a file you choose." />
+                    <TextBox Name="LogFilePathTextBox"
+                             IsReadOnly="True"
+                             Width="180"
+                             VerticalAlignment="Center"
+                             ToolTip="Active log file path." />
+                </StackPanel>
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <TextBlock Name="UsageTextBlock" Text="Tokens: 0 | Cost: $0.0000" />
