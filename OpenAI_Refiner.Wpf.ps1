@@ -656,6 +656,12 @@ $script:ClearLogButton         = $window.FindName('ClearLogButton')
 $script:CancelButton           = $window.FindName('CancelButton')
 $script:LogToFileCheckBox      = $window.FindName('LogToFileCheckBox')
 $script:LogFilePathTextBox     = $window.FindName('LogFilePathTextBox')
+$script:MenuSettingsApiKey      = $window.FindName('MenuSettingsApiKey')
+$script:MenuHelpBasePrompt      = $window.FindName('MenuHelpBasePrompt')
+$script:MenuHelpRefinementGoals = $window.FindName('MenuHelpRefinementGoals')
+$script:MenuHelpProjectContext  = $window.FindName('MenuHelpProjectContext')
+$script:MenuHelpFile            = $window.FindName('MenuHelpFile')
+$script:MenuHelpAbout           = $window.FindName('MenuHelpAbout')
 
 # Required control validation — fail fast with a clear message
 if (-not $script:PromptTextBox)         { throw "Failed to find PromptTextBox in XAML." }
@@ -1093,6 +1099,155 @@ $script:LogToFileCheckBox.Add_Unchecked({
     $script:LogFilePath = $null
     $script:LogFilePathTextBox.Text = ''
     Append-Log -Message "File logging disabled."
+})
+
+# =============================================================================
+# Menu — Settings
+# =============================================================================
+
+# Settings → Configure API Key
+$script:MenuSettingsApiKey.Add_Click({
+    $currentStatus = if ($script:SessionApiKey) {
+        "A session key is currently active (stored in memory only)."
+    } elseif ($env:OPENAI_API_KEY) {
+        "Using OPENAI_API_KEY environment variable. Enter a key below to override it for this session."
+    } else {
+        "No API key is set. Enter one below to continue."
+    }
+
+    $settingsXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Settings — API Key" Width="460" Height="220"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        ShowInTaskbar="False">
+    <StackPanel Margin="14">
+        <TextBlock Name="StatusLabel" TextWrapping="Wrap" Margin="0,0,0,10" />
+        <TextBlock Text="New session key (leave blank to keep current):" Margin="0,0,0,4" />
+        <PasswordBox Name="KeyBox" Margin="0,0,0,10" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="OkBtn"     Content="OK"     Padding="24,4" Margin="0,0,8,0" IsDefault="True" />
+            <Button Name="CancelBtn" Content="Cancel" Padding="24,4" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>
+'@
+
+    $settingsReader = New-Object System.Xml.XmlNodeReader ([xml]$settingsXaml)
+    $settingsDialog = [Windows.Markup.XamlReader]::Load($settingsReader)
+    $statusLabel    = $settingsDialog.FindName('StatusLabel')
+    $keyBox         = $settingsDialog.FindName('KeyBox')
+    $okBtn          = $settingsDialog.FindName('OkBtn')
+    $cancelBtn      = $settingsDialog.FindName('CancelBtn')
+
+    $statusLabel.Text = $currentStatus
+
+    $okBtn.Add_Click({
+        $settingsDialog.DialogResult = $true
+        $settingsDialog.Close()
+    })
+    $cancelBtn.Add_Click({
+        $settingsDialog.DialogResult = $false
+        $settingsDialog.Close()
+    })
+
+    $settingsDialog.Owner = $window
+    $dlgResult = $settingsDialog.ShowDialog()
+
+    if ($dlgResult -eq $true -and -not [string]::IsNullOrWhiteSpace($keyBox.Password)) {
+        $script:SessionApiKey = $keyBox.Password
+        Append-Log  -Message "Session API key updated via Settings menu (stored in memory only — not persisted)."
+        Show-Status -Message "Session API key updated."
+    }
+})
+
+# =============================================================================
+# Menu — Help
+# =============================================================================
+
+$script:MenuHelpBasePrompt.Add_Click({
+    [System.Windows.MessageBox]::Show(
+        "Base Prompt`n`n" +
+        "The raw, rough-draft instruction that is the starting point for refinement.`n`n" +
+        "Enter the task or question you want a coding assistant to answer. It can be a " +
+        "single sentence or several paragraphs. In Refine mode the text is iteratively " +
+        "transformed into a structured prompt with Role, Goals, Context, Deliverables, " +
+        "and Constraints sections.`n`n" +
+        "In Answer mode this field is sent directly to OpenAI and the model's response " +
+        "appears in the Task Output panel.",
+        "Help — Base Prompt",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Information
+    ) | Out-Null
+})
+
+$script:MenuHelpRefinementGoals.Add_Click({
+    [System.Windows.MessageBox]::Show(
+        "Refinement Goals`n`n" +
+        "Optional bullet points that guide how the refiner reshapes your Base Prompt.`n`n" +
+        "Use this field to steer the style or emphasis of the output. Examples:`n" +
+        "  - Focus on Python 3.12 compatibility`n" +
+        "  - Avoid adding test requirements`n" +
+        "  - Keep the result under 300 words`n`n" +
+        "The default goals produce a general-purpose, well-structured prompt. " +
+        "Clear or replace them to change the refiner's behaviour. " +
+        "This field is only used in Refine mode.",
+        "Help — Refinement Goals",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Information
+    ) | Out-Null
+})
+
+$script:MenuHelpProjectContext.Add_Click({
+    [System.Windows.MessageBox]::Show(
+        "Project Context`n`n" +
+        "Optional background about your project that helps the refiner produce more " +
+        "relevant, concrete prompts.`n`n" +
+        "Useful things to include:`n" +
+        "  - Language / framework  (e.g. 'C# ASP.NET Core 8 API')`n" +
+        "  - Team conventions      (e.g. 'prefer async/await over callbacks')`n" +
+        "  - Runtime environment   (e.g. 'Windows Server 2022, PS 7.4')`n`n" +
+        "Leave blank to use the built-in default (PowerShell-first automation project). " +
+        "This field is not sent to OpenAI in Answer mode.",
+        "Help — Project Context",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Information
+    ) | Out-Null
+})
+
+$script:MenuHelpFile.Add_Click({
+    [System.Windows.MessageBox]::Show(
+        "File (optional)`n`n" +
+        "Attach a local file whose path will be referenced in the prompt sent to OpenAI.`n`n" +
+        "Constraints:`n" +
+        "  - The file must exist on disk when you click Run.`n" +
+        "  - Maximum size: 512 KB (larger files are silently omitted).`n`n" +
+        "The file path — not its contents — is appended to the prompt text. " +
+        "Use it to give the model a reference point such as a config file, " +
+        "schema, or script you are actively working with.`n`n" +
+        "Click Browse... to choose a file, or type the full path directly.",
+        "Help — File",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Information
+    ) | Out-Null
+})
+
+$script:MenuHelpAbout.Add_Click({
+    [System.Windows.MessageBox]::Show(
+        "OpenAI Prompt Refiner`n`n" +
+        "A WPF tool for iteratively refining rough prompts into production-grade task " +
+        "descriptions suitable for coding assistants such as GitHub Copilot, Claude, " +
+        "or ChatGPT.`n`n" +
+        "Typical workflow:`n" +
+        "  1. Enter a rough Base Prompt.`n" +
+        "  2. Adjust Refinement Goals and Project Context as needed.`n" +
+        "  3. Click Run Refinement — the model improves the prompt over N iterations.`n" +
+        "  4. Copy the final prompt, or click Use this Prompt to execute it directly.`n`n" +
+        "API key priority: session key (Settings menu) > OPENAI_API_KEY env var > " +
+        "interactive prompt at run time.",
+        "About — OpenAI Prompt Refiner",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Information
+    ) | Out-Null
 })
 
 # =============================================================================

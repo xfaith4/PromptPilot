@@ -6,7 +6,22 @@
         MinHeight="640"
         MinWidth="820"
         WindowStartupLocation="CenterScreen">
-    <Grid Margin="8">
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_Settings">
+                <MenuItem Name="MenuSettingsApiKey" Header="Configure API _Key..."
+                          ToolTip="Set or update the OpenAI API key for this session." />
+            </MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Name="MenuHelpBasePrompt"      Header="_Base Prompt" />
+                <MenuItem Name="MenuHelpRefinementGoals" Header="_Refinement Goals" />
+                <MenuItem Name="MenuHelpProjectContext"  Header="_Project Context" />
+                <MenuItem Name="MenuHelpFile"            Header="_File" />
+                <Separator />
+                <MenuItem Name="MenuHelpAbout"           Header="_About" />
+            </MenuItem>
+        </Menu>
+        <Grid Margin="8">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -277,5 +292,6 @@
                 <TextBlock Name="UsageTextBlock" Text="Tokens: 0 | Cost: $0.0000" />
             </StatusBarItem>
         </StatusBar>
-    </Grid>
+        </Grid>
+    </DockPanel>
 </Window>
