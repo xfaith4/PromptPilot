@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="OpenAI Prompt Refiner (WPF)"
+        Title="Prompt Pilot"
         Height="940"
         Width="1100"
         MinHeight="640"
@@ -10,7 +10,7 @@
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_Settings">
                 <MenuItem Name="MenuSettingsApiKey" Header="Configure API _Key..."
-                          ToolTip="Set or update the OpenAI API key for this session." />
+                          ToolTip="Set the active provider and update saved or session API keys." />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Name="MenuHelpBasePrompt"      Header="_Base Prompt" />
@@ -36,7 +36,7 @@
 
         <!-- Header -->
         <TextBlock Grid.Row="0" Grid.ColumnSpan="2"
-                   Text="OpenAI Prompt Refiner"
+                   Text="Prompt Pilot"
                    FontSize="20"
                    FontWeight="Bold"
                    Margin="0,0,0,8" />
@@ -254,6 +254,10 @@
         <StatusBar Grid.Row="3" Grid.ColumnSpan="2" Margin="0,8,0,0">
             <StatusBarItem>
                 <TextBlock Name="StatusTextBlock" Text="Ready." />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock Name="ProviderStatusTextBlock" Text="Provider: OpenAI | no key configured" />
             </StatusBarItem>
             <Separator />
             <!-- [3] Busy indicator and Cancel button -->

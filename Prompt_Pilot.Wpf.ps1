@@ -28,14 +28,43 @@ $script:DefaultModel           = 'gpt-5-mini'
 $script:DefaultIterations      = 3
 $script:PricePer1kInputTokens  = 0.00015
 $script:PricePer1kOutputTokens = 0.00060
-$script:OpenAIApiBase          = 'https://api.openai.com/v1'
-$script:ChatEndpointPath       = 'chat/completions'
+$script:DefaultProvider        = 'OpenAI'
+$script:ProviderDefinitions    = [ordered]@{
+    OpenAI = [ordered]@{
+        DisplayName      = 'OpenAI'
+        ApiBase          = 'https://api.openai.com/v1'
+        ChatEndpointPath = 'chat/completions'
+        EnvVars          = @('OPENAI_API_KEY')
+        DefaultModel     = 'gpt-5-mini'
+        Protocol         = 'OpenAI'
+    }
+    Anthropic = [ordered]@{
+        DisplayName      = 'Anthropic'
+        ApiBase          = 'https://api.anthropic.com'
+        ChatEndpointPath = 'v1/messages'
+        EnvVars          = @('ANTHROPIC_API_KEY')
+        DefaultModel     = 'claude-sonnet-4-20250514'
+        Protocol         = 'Anthropic'
+    }
+    GitHubCopilot = [ordered]@{
+        DisplayName      = 'GitHub Copilot'
+        ApiBase          = 'https://models.inference.ai.azure.com'
+        ChatEndpointPath = 'chat/completions'
+        EnvVars          = @('GITHUB_COPILOT_API_KEY', 'GITHUB_TOKEN')
+        DefaultModel     = 'gpt-4.1'
+        Protocol         = 'OpenAI'
+    }
+}
+$script:ActiveProvider         = $script:DefaultProvider
+$script:SavedApiKeys           = @{}
+$script:SettingsDir            = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Prompt Pilot'
+$script:SettingsPath           = Join-Path $script:SettingsDir 'settings.json'
 
 # [3] Cancellation flag — set by Cancel button or AcceptIterationButton
 $script:CancelRequested = $false
 
-# [9] Session API key — stored in memory only, never written to disk or env vars
-$script:SessionApiKey = $null
+# [9] Session API keys — stored in memory only, never written to disk or env vars
+$script:SessionApiKeys = @{}
 
 # [7] Active log file path — $null means file logging is disabled
 $script:LogFilePath = $null
@@ -87,6 +116,194 @@ function Append-Log {
         catch {
             # Silently ignore file-write failures to prevent recursive log loops
         }
+    }
+}
+
+function Get-ProviderDefinition {
+    param(
+        [string]$ProviderName = $script:ActiveProvider
+    )
+
+    if (-not $script:ProviderDefinitions.Contains($ProviderName)) {
+        throw "Unsupported provider: $ProviderName"
+    }
+
+    return $script:ProviderDefinitions[$ProviderName]
+}
+
+function Protect-Secret {
+    param([string]$PlainText)
+
+    if ([string]::IsNullOrWhiteSpace($PlainText)) {
+        return $null
+    }
+
+    $secureValue = ConvertTo-SecureString -String $PlainText -AsPlainText -Force
+    return ConvertFrom-SecureString -SecureString $secureValue
+}
+
+function Unprotect-Secret {
+    param([string]$ProtectedText)
+
+    if ([string]::IsNullOrWhiteSpace($ProtectedText)) {
+        return $null
+    }
+
+    $secureValue = ConvertTo-SecureString -String $ProtectedText
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureValue)
+
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
+}
+
+function Load-ProviderSettings {
+    $settings = @{
+        ActiveProvider = $script:DefaultProvider
+        Keys           = @{}
+    }
+
+    foreach ($providerName in $script:ProviderDefinitions.Keys) {
+        $settings.Keys[$providerName] = $null
+    }
+
+    if (-not (Test-Path -LiteralPath $script:SettingsPath)) {
+        return $settings
+    }
+
+    try {
+        $rawSettings = Get-Content -LiteralPath $script:SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        if ($rawSettings.ActiveProvider -and $script:ProviderDefinitions.Contains([string]$rawSettings.ActiveProvider)) {
+            $settings.ActiveProvider = [string]$rawSettings.ActiveProvider
+        }
+
+        if ($rawSettings.Keys) {
+            foreach ($providerName in $script:ProviderDefinitions.Keys) {
+                $property = $rawSettings.Keys.PSObject.Properties[$providerName]
+                if ($property -and -not [string]::IsNullOrWhiteSpace($property.Value)) {
+                    $protectedValue = [string]$property.Value
+                    $settings.Keys[$providerName] = Unprotect-Secret -ProtectedText $protectedValue
+                }
+            }
+        }
+    }
+    catch {
+        if ($script:LogTextBox) {
+            Append-Log -Message ("WARNING: Failed to load saved settings: {0}" -f $_.Exception.Message)
+        }
+    }
+
+    return $settings
+}
+
+function Save-ProviderSettings {
+    try {
+        if (-not (Test-Path -LiteralPath $script:SettingsDir)) {
+            New-Item -ItemType Directory -Path $script:SettingsDir -Force | Out-Null
+        }
+
+        $keysPayload = [ordered]@{}
+        foreach ($providerName in $script:ProviderDefinitions.Keys) {
+            $plainText = $script:SavedApiKeys[$providerName]
+            $keysPayload[$providerName] = if ([string]::IsNullOrWhiteSpace($plainText)) {
+                $null
+            }
+            else {
+                Protect-Secret -PlainText $plainText
+            }
+        }
+
+        $settingsPayload = [ordered]@{
+            ActiveProvider = $script:ActiveProvider
+            Keys           = $keysPayload
+        }
+
+        $settingsPayload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:SettingsPath -Encoding UTF8
+    }
+    catch {
+        throw "Unable to save provider settings: $($_.Exception.Message)"
+    }
+}
+
+function Get-EnvironmentProviderKey {
+    param([string]$ProviderName = $script:ActiveProvider)
+
+    $provider = Get-ProviderDefinition -ProviderName $ProviderName
+    foreach ($envVar in $provider.EnvVars) {
+        $candidate = [Environment]::GetEnvironmentVariable($envVar)
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Get-ProviderCredentialState {
+    param([string]$ProviderName = $script:ActiveProvider)
+
+    if ($script:SessionApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SessionApiKeys[$ProviderName])) {
+        return [pscustomobject]@{ Source = 'session'; Summary = 'session key'; IsConfigured = $true }
+    }
+
+    if ($script:SavedApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SavedApiKeys[$ProviderName])) {
+        return [pscustomobject]@{ Source = 'saved'; Summary = 'saved key'; IsConfigured = $true }
+    }
+
+    if (Get-EnvironmentProviderKey -ProviderName $ProviderName) {
+        return [pscustomobject]@{ Source = 'environment'; Summary = 'env key'; IsConfigured = $true }
+    }
+
+    return [pscustomobject]@{ Source = 'none'; Summary = 'no key configured'; IsConfigured = $false }
+}
+
+function Update-ProviderIndicator {
+    if (-not $script:ProviderStatusTextBlock) {
+        return
+    }
+
+    $provider = Get-ProviderDefinition
+    $credentialState = Get-ProviderCredentialState
+    $script:ProviderStatusTextBlock.Text = "Provider: {0} | {1}" -f $provider.DisplayName, $credentialState.Summary
+}
+
+function Set-ActiveProvider {
+    param(
+        [Parameter(Mandatory)][string]$ProviderName,
+        [switch]$SkipSave
+    )
+
+    $previousProvider = if ($script:ProviderDefinitions.Contains($script:ActiveProvider)) {
+        Get-ProviderDefinition -ProviderName $script:ActiveProvider
+    }
+    else {
+        $null
+    }
+    $nextProvider = Get-ProviderDefinition -ProviderName $ProviderName
+
+    $script:ActiveProvider = $ProviderName
+
+    if ($script:ModelTextBox) {
+        $shouldUpdateModel = [string]::IsNullOrWhiteSpace($script:ModelTextBox.Text)
+        if (-not $shouldUpdateModel -and $previousProvider) {
+            $shouldUpdateModel = ($script:ModelTextBox.Text -eq $previousProvider.DefaultModel)
+        }
+
+        if ($shouldUpdateModel) {
+            $script:ModelTextBox.Text = $nextProvider.DefaultModel
+        }
+    }
+
+    Update-ProviderIndicator
+
+    if (-not $SkipSave) {
+        Save-ProviderSettings
     }
 }
 
@@ -145,14 +362,30 @@ function Set-BusyState {
 function Get-ApiKey {
     <#
     .SYNOPSIS
-        Returns the active OpenAI API key using the following priority:
-          1. $script:SessionApiKey  (set interactively this session)
-          2. $env:OPENAI_API_KEY    (environment variable)
-          3. A WPF PasswordBox modal prompt (stored as SessionApiKey, never persisted)
+        Returns the active provider API key using the following priority:
+          1. Session key           (set interactively this session)
+          2. Saved settings key    (stored securely for the current Windows user)
+          3. Provider environment variable(s)
+          4. A WPF PasswordBox modal prompt (stored as a session key, never persisted)
     #>
+    param(
+        [string]$ProviderName = $script:ActiveProvider
+    )
 
-    if ($script:SessionApiKey) { return $script:SessionApiKey }
-    if ($env:OPENAI_API_KEY)   { return $env:OPENAI_API_KEY   }
+    $provider = Get-ProviderDefinition -ProviderName $ProviderName
+
+    if ($script:SessionApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SessionApiKeys[$ProviderName])) {
+        return $script:SessionApiKeys[$ProviderName]
+    }
+
+    if ($script:SavedApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SavedApiKeys[$ProviderName])) {
+        return $script:SavedApiKeys[$ProviderName]
+    }
+
+    $environmentKey = Get-EnvironmentProviderKey -ProviderName $ProviderName
+    if ($environmentKey) {
+        return $environmentKey
+    }
 
     # Neither source is available — show a modal WPF PasswordBox dialog
     $inputXaml = @'
@@ -162,7 +395,7 @@ function Get-ApiKey {
         ShowInTaskbar="False">
     <StackPanel Margin="14">
         <TextBlock TextWrapping="Wrap" Margin="0,0,0,10"
-                   Text="Enter your OpenAI API key for this session. It will not be saved to disk or written to any environment variable." />
+                   Text="Enter the API key for this provider. It will be kept in memory for this session only and will not be written to disk or to any environment variable." />
         <PasswordBox Name="KeyBox" Margin="0,0,0,10" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Name="OkBtn"     Content="OK"     Padding="24,4" Margin="0,0,8,0" IsDefault="True" />
@@ -187,15 +420,105 @@ function Get-ApiKey {
         $inputDialog.Close()
     })
 
+    $inputDialog.Title = "API Key Required - $($provider.DisplayName)"
+    $inputDialog.Owner = $window
     $dialogResult = $inputDialog.ShowDialog()
 
     if ($dialogResult -ne $true -or [string]::IsNullOrWhiteSpace($keyBox.Password)) {
         throw "No API key provided. Operation cancelled."
     }
 
-    $script:SessionApiKey = $keyBox.Password
-    Append-Log -Message "Session API key accepted (stored in memory only — not persisted)."
-    return $script:SessionApiKey
+    $script:SessionApiKeys[$ProviderName] = $keyBox.Password
+    Append-Log -Message ("Session API key accepted for {0} (stored in memory only — not persisted)." -f $provider.DisplayName)
+    Update-ProviderIndicator
+    return $script:SessionApiKeys[$ProviderName]
+}
+
+function Invoke-ProviderChatRequest {
+    param(
+        [Parameter(Mandatory)][string]$ProviderName,
+        [Parameter(Mandatory)][string]$ApiKey,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter()][string]$SystemMessage = '',
+        [Parameter(Mandatory)][array]$Messages,
+        [int]$MaxTokens = 4096
+    )
+
+    $provider = Get-ProviderDefinition -ProviderName $ProviderName
+    $endpoint = "{0}/{1}" -f $provider.ApiBase.TrimEnd('/'), $provider.ChatEndpointPath.TrimStart('/')
+
+    switch ($provider.Protocol) {
+        'Anthropic' {
+            $headers = @{
+                'x-api-key'         = $ApiKey
+                'anthropic-version' = '2023-06-01'
+                'content-type'      = 'application/json'
+            }
+
+            $body = @{
+                model      = $Model
+                max_tokens = $MaxTokens
+                messages   = @(
+                    foreach ($message in $Messages) {
+                        @{
+                            role    = $message.role
+                            content = @(
+                                @{
+                                    type = 'text'
+                                    text = [string]$message.content
+                                }
+                            )
+                        }
+                    }
+                )
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($SystemMessage)) {
+                $body.system = $SystemMessage
+            }
+
+            $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body ($body | ConvertTo-Json -Depth 10) -TimeoutSec 120
+
+            $responseText = @(
+                foreach ($part in $response.content) {
+                    if ($part.type -eq 'text') {
+                        $part.text
+                    }
+                }
+            ) -join "`n"
+
+            return [pscustomobject]@{
+                Text             = $responseText
+                PromptTokens     = [int]($response.usage.input_tokens)
+                CompletionTokens = [int]($response.usage.output_tokens)
+            }
+        }
+        default {
+            $headers = @{
+                'Authorization' = "Bearer $ApiKey"
+                'Content-Type'  = 'application/json'
+            }
+
+            $allMessages = @()
+            if (-not [string]::IsNullOrWhiteSpace($SystemMessage)) {
+                $allMessages += @{ role = 'system'; content = $SystemMessage }
+            }
+            $allMessages += $Messages
+
+            $body = @{
+                model    = $Model
+                messages = $allMessages
+            } | ConvertTo-Json -Depth 10
+
+            $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body $body -TimeoutSec 120
+
+            return [pscustomobject]@{
+                Text             = $response.choices[0].message.content
+                PromptTokens     = [int]($response.usage.prompt_tokens)
+                CompletionTokens = [int]($response.usage.completion_tokens)
+            }
+        }
+    }
 }
 
 # =============================================================================
@@ -303,8 +626,10 @@ function Invoke-OpenAIRefinement {
         [Parameter()][string]$ProjectContext  = ''
     )
 
+    $provider = Get-ProviderDefinition
+
     # [9] Resolve API key (may show interactive prompt)
-    $apiKey = Get-ApiKey
+    $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
 
     # [8] Input length validation
     if ($BasePrompt.Length -gt 32000) {
@@ -335,7 +660,7 @@ function Invoke-OpenAIRefinement {
     $totalInputTokens  = 0
     $totalOutputTokens = 0
 
-    # Fixed system prompt for the Prompt Refiner role
+    # Fixed system prompt for the Prompt Pilot role
     $systemInstructions = @"
 You are a senior prompt architect for coding assistants (e.g., GitHub Copilot, Claude, ChatGPT Code).
 Your job is to transform rough, underspecified user prompts into high-quality, production-grade task
@@ -393,12 +718,6 @@ Use this context to make the refined prompts more concrete and useful, but do no
         }
     }
 
-    $apiEndpoint = "{0}/{1}" -f $script:OpenAIApiBase, $script:ChatEndpointPath
-    $headers = @{
-        'Authorization' = "Bearer $apiKey"
-        'Content-Type'  = 'application/json'
-    }
-
     for ($i = 1; $i -le $Iterations; $i++) {
 
         # [3] Check for cancellation before starting each iteration
@@ -436,34 +755,26 @@ Do not include your own commentary or analysis, only the final prompt the user s
 "@
 
         $messages = @(
-            @{ role = 'system'; content = $systemInstructions },
-            @{ role = 'user';   content = $userContent }
+            @{ role = 'user'; content = $userContent }
         )
 
-        # [8] Depth 10 for robust serialisation
-        $body = @{
-            model    = $Model
-            messages = $messages
-        } | ConvertTo-Json -Depth 10
-
-        Show-Status -Message ("Calling OpenAI (iteration {0}/{1})..." -f $i, $Iterations)
+        Show-Status -Message ("Calling {0} (iteration {1}/{2})..." -f $provider.DisplayName, $i, $Iterations)
 
         # [2] Retry wrapper; [2] explicit timeout
         $response = Invoke-WithRetry -Action {
-            Invoke-RestMethod -Method Post `
-                -Uri     $apiEndpoint `
-                -Headers $headers `
-                -Body    $body `
-                -TimeoutSec 120
+            Invoke-ProviderChatRequest `
+                -ProviderName  $script:ActiveProvider `
+                -ApiKey        $apiKey `
+                -Model         $Model `
+                -SystemMessage $systemInstructions `
+                -Messages      $messages `
+                -MaxTokens     4096
         }
 
-        $text = $null
-        if ($response.choices -and $response.choices[0].message) {
-            $text = $response.choices[0].message.content
-        }
+        $text = $response.Text
 
         if (-not $text) {
-            throw "No text content returned from OpenAI in iteration $i."
+            throw "No text content returned from $($provider.DisplayName) in iteration $i."
         }
 
         $currentDraft = $text.Trim()
@@ -473,10 +784,8 @@ Do not include your own commentary or analysis, only the final prompt the user s
             $script:FinalPromptTextBox.Text = $currentDraft
         }
 
-        if ($response.usage) {
-            $totalInputTokens  += [int]$response.usage.prompt_tokens
-            $totalOutputTokens += [int]$response.usage.completion_tokens
-        }
+        $totalInputTokens  += [int]$response.PromptTokens
+        $totalOutputTokens += [int]$response.CompletionTokens
 
         $iterationResults += [pscustomobject]@{
             Iteration = $i
@@ -514,7 +823,7 @@ Do not include your own commentary or analysis, only the final prompt the user s
 function Invoke-OpenAIAnswer {
     <#
     .SYNOPSIS
-        Executes a prompt (refined or raw) against the OpenAI Chat Completions API
+        Executes a prompt (refined or raw) against the active provider API
         and returns the response text with token usage and estimated cost.
     #>
     [CmdletBinding()]
@@ -524,8 +833,10 @@ function Invoke-OpenAIAnswer {
         [Parameter()][string]$Model    = $script:DefaultModel
     )
 
+    $provider = Get-ProviderDefinition
+
     # [9] Resolve API key
-    $apiKey = Get-ApiKey
+    $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
 
     # [8] Input length validation
     if ($Prompt.Length -gt 32000) {
@@ -553,43 +864,24 @@ function Invoke-OpenAIAnswer {
         @{ role = 'user'; content = $promptWithContext }
     )
 
-    # [8] Depth 10
-    $body = @{
-        model    = $Model
-        messages = $messages
-    } | ConvertTo-Json -Depth 10
-
-    $headers = @{
-        'Authorization' = "Bearer $apiKey"
-        'Content-Type'  = 'application/json'
-    }
-
-    $apiEndpoint = "{0}/{1}" -f $script:OpenAIApiBase, $script:ChatEndpointPath
-
     # [2] Retry wrapper with timeout
     $response = Invoke-WithRetry -Action {
-        Invoke-RestMethod -Method Post `
-            -Uri     $apiEndpoint `
-            -Headers $headers `
-            -Body    $body `
-            -TimeoutSec 120
+        Invoke-ProviderChatRequest `
+            -ProviderName $script:ActiveProvider `
+            -ApiKey       $apiKey `
+            -Model        $Model `
+            -Messages     $messages `
+            -MaxTokens    4096
     }
 
-    $text = $null
-    if ($response.choices -and $response.choices[0].message) {
-        $text = $response.choices[0].message.content
-    }
+    $text = $response.Text
 
     if (-not $text) {
-        throw "No text content returned from OpenAI for task execution."
+        throw "No text content returned from $($provider.DisplayName) for task execution."
     }
 
-    $totalInputTokens  = 0
-    $totalOutputTokens = 0
-    if ($response.usage) {
-        $totalInputTokens  = [int]$response.usage.prompt_tokens
-        $totalOutputTokens = [int]$response.usage.completion_tokens
-    }
+    $totalInputTokens  = [int]$response.PromptTokens
+    $totalOutputTokens = [int]$response.CompletionTokens
 
     $totalTokens = $totalInputTokens + $totalOutputTokens
     $cost = 0.0
@@ -618,7 +910,7 @@ $script:ScriptDir  = if ($PSCommandPath) {
 }
 $script:PresetsDir = Join-Path $script:ScriptDir 'presets'
 
-$xamlPath = Join-Path -Path $script:ScriptDir -ChildPath 'OpenAI_Refiner.MainWindow.xaml'
+$xamlPath = Join-Path -Path $script:ScriptDir -ChildPath 'Prompt_Pilot.MainWindow.xaml'
 if (-not (Test-Path -LiteralPath $xamlPath)) {
     throw "XAML file not found at $xamlPath"
 }
@@ -644,6 +936,7 @@ $script:ModelTextBox           = $window.FindName('ModelTextBox')
 $script:FinalPromptTextBox     = $window.FindName('FinalPromptTextBox')
 $script:HistoryTextBox         = $window.FindName('HistoryTextBox')
 $script:StatusTextBlock        = $window.FindName('StatusTextBlock')
+$script:ProviderStatusTextBlock = $window.FindName('ProviderStatusTextBlock')
 $script:UsageTextBlock         = $window.FindName('UsageTextBlock')
 $script:ModeRefineRadio        = $window.FindName('ModeRefineRadio')
 $script:ModeAnswerRadio        = $window.FindName('ModeAnswerRadio')
@@ -676,6 +969,7 @@ if (-not $script:ClearLogButton)        { throw "Failed to find ClearLogButton i
 if (-not $script:CancelButton)          { throw "Failed to find CancelButton in XAML." }
 if (-not $script:LogToFileCheckBox)     { throw "Failed to find LogToFileCheckBox in XAML." }
 if (-not $script:LogFilePathTextBox)    { throw "Failed to find LogFilePathTextBox in XAML." }
+if (-not $script:ProviderStatusTextBlock) { throw "Failed to find ProviderStatusTextBlock in XAML." }
 
 # Seed refinement goals with a sensible default
 if (-not $script:GoalsTextBox.Text) {
@@ -688,8 +982,11 @@ if (-not $script:GoalsTextBox.Text) {
 "@
 }
 
+$loadedProviderSettings = Load-ProviderSettings
+$script:SavedApiKeys = $loadedProviderSettings.Keys
 $script:CurrentMode = 'Refine'
 $script:UsageTextBlock.Text = "Tokens: 0 | Cost: `$0.000000"
+Set-ActiveProvider -ProviderName $loadedProviderSettings.ActiveProvider -SkipSave
 
 # =============================================================================
 # Mode management
@@ -1065,9 +1362,11 @@ $script:LoadPresetButton.Add_Click({
 
 # [9] Clear Session Key
 $script:ClearSessionKeyButton.Add_Click({
-    $script:SessionApiKey = $null
-    Append-Log  -Message "Session API key cleared."
-    Show-Status -Message "Session API key cleared."
+    $provider = Get-ProviderDefinition
+    $script:SessionApiKeys.Remove($script:ActiveProvider) | Out-Null
+    Append-Log  -Message ("Session API key cleared for {0}." -f $provider.DisplayName)
+    Show-Status -Message ("Session API key cleared for {0}." -f $provider.DisplayName)
+    Update-ProviderIndicator
 })
 
 # [7] Log-to-file checkbox: Checked — prompt for a save path
@@ -1076,7 +1375,7 @@ $script:LogToFileCheckBox.Add_Checked({
         $sfd          = New-Object System.Windows.Forms.SaveFileDialog
         $sfd.Title    = "Choose log file location"
         $sfd.Filter   = "Log files (*.log)|*.log|All files (*.*)|*.*"
-        $sfd.FileName = "OpenAI_Refiner_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+        $sfd.FileName = "Prompt_Pilot_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
         if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $script:LogFilePath = $sfd.FileName
@@ -1107,23 +1406,25 @@ $script:LogToFileCheckBox.Add_Unchecked({
 
 # Settings → Configure API Key
 $script:MenuSettingsApiKey.Add_Click({
-    $currentStatus = if ($script:SessionApiKey) {
-        "A session key is currently active (stored in memory only)."
-    } elseif ($env:OPENAI_API_KEY) {
-        "Using OPENAI_API_KEY environment variable. Enter a key below to override it for this session."
-    } else {
-        "No API key is set. Enter one below to continue."
-    }
-
     $settingsXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Settings — API Key" Width="460" Height="220"
+        Title="Settings — API Keys" Width="500" Height="310"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False">
     <StackPanel Margin="14">
+        <TextBlock Text="Active provider:" Margin="0,0,0,4" />
+        <ComboBox Name="ProviderComboBox" Margin="0,0,0,10" />
         <TextBlock Name="StatusLabel" TextWrapping="Wrap" Margin="0,0,0,10" />
-        <TextBlock Text="New session key (leave blank to keep current):" Margin="0,0,0,4" />
+        <CheckBox Name="RemoveSavedKeyCheckBox"
+                  Content="Remove saved key for selected provider"
+                  Margin="0,0,0,10" />
+        <TextBlock Text="New API key (leave blank to keep current):" Margin="0,0,0,4" />
         <PasswordBox Name="KeyBox" Margin="0,0,0,10" />
+        <TextBlock Text="Keys entered here are saved securely for the current Windows user. Run-time prompts still remain session-only."
+                   TextWrapping="Wrap"
+                   Foreground="Gray"
+                   FontSize="11"
+                   Margin="0,0,0,10" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Name="OkBtn"     Content="OK"     Padding="24,4" Margin="0,0,8,0" IsDefault="True" />
             <Button Name="CancelBtn" Content="Cancel" Padding="24,4" IsCancel="True" />
@@ -1134,12 +1435,31 @@ $script:MenuSettingsApiKey.Add_Click({
 
     $settingsReader = New-Object System.Xml.XmlNodeReader ([xml]$settingsXaml)
     $settingsDialog = [Windows.Markup.XamlReader]::Load($settingsReader)
+    $providerCombo   = $settingsDialog.FindName('ProviderComboBox')
     $statusLabel    = $settingsDialog.FindName('StatusLabel')
+    $removeCheckBox = $settingsDialog.FindName('RemoveSavedKeyCheckBox')
     $keyBox         = $settingsDialog.FindName('KeyBox')
     $okBtn          = $settingsDialog.FindName('OkBtn')
     $cancelBtn      = $settingsDialog.FindName('CancelBtn')
 
-    $statusLabel.Text = $currentStatus
+    foreach ($providerName in $script:ProviderDefinitions.Keys) {
+        [void]$providerCombo.Items.Add($providerName)
+    }
+    $providerCombo.SelectedItem = $script:ActiveProvider
+
+    $updateStatus = {
+        $selectedProvider = [string]$providerCombo.SelectedItem
+        if ([string]::IsNullOrWhiteSpace($selectedProvider)) {
+            return
+        }
+
+        $provider = Get-ProviderDefinition -ProviderName $selectedProvider
+        $state = Get-ProviderCredentialState -ProviderName $selectedProvider
+        $statusLabel.Text = "{0} is currently using {1}. Leave the key box blank to keep it, or paste a new key to replace the saved value." -f $provider.DisplayName, $state.Summary
+    }
+
+    $providerCombo.Add_SelectionChanged($updateStatus)
+    & $updateStatus
 
     $okBtn.Add_Click({
         $settingsDialog.DialogResult = $true
@@ -1153,10 +1473,29 @@ $script:MenuSettingsApiKey.Add_Click({
     $settingsDialog.Owner = $window
     $dlgResult = $settingsDialog.ShowDialog()
 
-    if ($dlgResult -eq $true -and -not [string]::IsNullOrWhiteSpace($keyBox.Password)) {
-        $script:SessionApiKey = $keyBox.Password
-        Append-Log  -Message "Session API key updated via Settings menu (stored in memory only — not persisted)."
-        Show-Status -Message "Session API key updated."
+    if ($dlgResult -eq $true) {
+        $selectedProvider = [string]$providerCombo.SelectedItem
+        if ([string]::IsNullOrWhiteSpace($selectedProvider)) {
+            $selectedProvider = $script:DefaultProvider
+        }
+
+        Set-ActiveProvider -ProviderName $selectedProvider
+
+        if ($removeCheckBox.IsChecked -eq $true) {
+            $script:SavedApiKeys[$selectedProvider] = $null
+            $script:SessionApiKeys.Remove($selectedProvider) | Out-Null
+            Save-ProviderSettings
+            Append-Log -Message ("Saved API key removed for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($keyBox.Password)) {
+            $script:SavedApiKeys[$selectedProvider] = $keyBox.Password
+            Save-ProviderSettings
+            Append-Log -Message ("Saved API key updated for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
+        }
+
+        Update-ProviderIndicator
+        Show-Status -Message ("Active provider set to {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
     }
 })
 
@@ -1233,7 +1572,7 @@ $script:MenuHelpFile.Add_Click({
 
 $script:MenuHelpAbout.Add_Click({
     [System.Windows.MessageBox]::Show(
-        "OpenAI Prompt Refiner`n`n" +
+        "Prompt Pilot`n`n" +
         "A WPF tool for iteratively refining rough prompts into production-grade task " +
         "descriptions suitable for coding assistants such as GitHub Copilot, Claude, " +
         "or ChatGPT.`n`n" +
@@ -1242,9 +1581,9 @@ $script:MenuHelpAbout.Add_Click({
         "  2. Adjust Refinement Goals and Project Context as needed.`n" +
         "  3. Click Run Refinement — the model improves the prompt over N iterations.`n" +
         "  4. Copy the final prompt, or click Use this Prompt to execute it directly.`n`n" +
-        "API key priority: session key (Settings menu) > OPENAI_API_KEY env var > " +
+        "API key priority per provider: session key > saved settings key > provider env var > " +
         "interactive prompt at run time.",
-        "About — OpenAI Prompt Refiner",
+        "About — Prompt Pilot",
         [System.Windows.MessageBoxButton]::OK,
         [System.Windows.MessageBoxImage]::Information
     ) | Out-Null
@@ -1255,6 +1594,7 @@ $script:MenuHelpAbout.Add_Click({
 # =============================================================================
 
 Set-Mode -Mode 'Refine'
+Update-ProviderIndicator
 Append-Log -Message "Ready."
 $null = $window.ShowDialog()
 

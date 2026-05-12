@@ -32,14 +32,14 @@ function OpenAI_Refiner {
         OpenAIEndpoint          = "https://api.openai.com/v1/chat/completions"
         ApiKey                  = $env:OPENAI_API_KEY
         BaseExportPath          = $env:OpenAI_Refiner_Dir
-        DefaultModel            = "gpt-4.1-mini"
+        DefaultModel            = "gpt-5-mini"
         DefaultMaxTokens        = 4096
         DefaultTemperature      = 0.6
         RefinementIterations    = 5
         RetryCount              = 3
         RetryDelaySeconds       = 5
         SessionSummaryFile      = "OpenAI_SessionSummary.xlsx"  # Excel summary file
-        FolderNameModel         = "gpt-4o-mini"                # Cheaper model for folder naming
+        FolderNameModel         = "gpt-5-mini"                # Cheaper model for folder naming
         RefinementGoalsTemplate = @"
 Refine this response further by:
 1. Expanding with more useful details or context.
@@ -314,316 +314,16 @@ $Response
     [int]$TotalTokenUsage = 0
     [int]$TotalPromptTokens = 0
     [int]$TotalCompletionTokens = 0
-    ### BEGIN: Refiner_MultiModal_Helpers
-
-    function Select-RefinerInputFile {
-        <#
-    .SYNOPSIS
-        Lets the user pick a file using a GUI dialog when possible,
-        and falls back to manual path entry otherwise.
-    #>
-        param()
-
-        try {
-            # Try to load WinForms for a GUI file picker (works on Windows PowerShell / pwsh on Windows)
-            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-
-            $dialog = New-Object System.Windows.Forms.OpenFileDialog
-            $dialog.Title = "Select a file for the Prompt Refiner"
-            $dialog.Filter = "All files (*.*)|*.*"
-
-            $null = $dialog.ShowDialog()
-            if ($dialog.FileName) {
-                # User picked a file
-                return $dialog.FileName
-            }
-            else {
-                # User cancelled
-                Write-Log "File selection was cancelled by the user." "INFO"
-                return $null
-            }
-        }
-        catch {
-            # No WinForms (e.g. non-Windows or constrained host) – fall back to manual path entry
-            Write-Log "GUI file picker unavailable, falling back to manual path entry. $($_.Exception.Message)" "WARN"
-            $manualPath = Read-Host "Enter full path to the file you want to work with"
-            return $manualPath
-        }
-    }
-
-    function Get-RefinerFileCategory {
-        <#
-    .SYNOPSIS
-        Maps a file extension to a coarse “category” so we can ask smarter questions.
-    #>
-        param(
-            [Parameter(Mandatory)][string]$Path
-        )
-
-        $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
-
-        switch ($ext) {
-            '.txt' { 'Text' }
-            '.md' { 'Text' }
-            '.rtf' { 'Text' }
-
-            '.ps1' { 'Code' }
-            '.psm1' { 'Code' }
-            '.psd1' { 'Code' }
-            '.py' { 'Code' }
-            '.js' { 'Code' }
-            '.ts' { 'Code' }
-            '.cs' { 'Code' }
-            '.java' { 'Code' }
-            '.sh' { 'Code' }
-
-            '.doc' { 'Document' }
-            '.docx' { 'Document' }
-            '.pdf' { 'Document' }
-            '.ppt' { 'Document' }
-            '.pptx' { 'Document' }
-
-            '.xls' { 'Spreadsheet' }
-            '.xlsx' { 'Spreadsheet' }
-            '.csv' { 'Spreadsheet' }
-
-            '.png' { 'Image' }
-            '.jpg' { 'Image' }
-            '.jpeg' { 'Image' }
-            '.gif' { 'Image' }
-            '.bmp' { 'Image' }
-            '.webp' { 'Image' }
-
-            '.mp3' { 'Audio' }
-            '.wav' { 'Audio' }
-            '.m4a' { 'Audio' }
-
-            '.mp4' { 'Video' }
-            '.mkv' { 'Video' }
-            '.mov' { 'Video' }
-            '.avi' { 'Video' }
-
-            default { 'Other' }
-        }
-    }
-
-    function Get-RefinementQuestionsForFileCategory {
-        <#
-    .SYNOPSIS
-        Returns a list of follow-up questions appropriate for the file category.
-    #>
-        param(
-            [Parameter(Mandatory)][string]$Category
-        )
-
-        switch ($Category) {
-            'Text' {
-                @(
-                    "Who is the target audience for this text (e.g. engineers, executives, general users)?"
-                    "What is the main goal: clarity, brevity, persuasion, technical accuracy, or something else?"
-                    "Do you want the tone to be formal, casual, playful, or neutral?"
-                    "Are there any sections that are off-limits for editing (e.g. legal clauses, exact quotes)?"
-                )
-            }
-            'Code' {
-                @(
-                    "What is the primary language or stack in this file?"
-                    "Is your goal bug fixing, performance optimization, style/readability, or feature changes?"
-                    "Are there constraints like 'must stay compatible with PowerShell 5.1' or 'public APIs cannot change'?"
-                    "What environment does this code run in (OS, runtime version, cloud provider, etc.)?"
-                )
-            }
-            'Document' {
-                @(
-                    "Do you want a summary, rewrite, or critique of this document?"
-                    "What should the reader be able to do after reading the refined output (decide, learn, implement)?"
-                    "Are there specific sections that matter most (e.g. methodology, conclusions, executive summary)?"
-                    "Should we keep original formatting structure (headings, bullet lists), or is free-form OK?"
-                )
-            }
-            'Spreadsheet' {
-                @(
-                    "What are the key metrics or columns you actually care about?"
-                    "Do you want formulas reviewed, dashboards suggested, or data quality issues surfaced?"
-                    "Over what time period or subset of rows should the analysis focus?"
-                    "Are there any privacy constraints (columns that must not be exposed in examples)?"
-                )
-            }
-            'Image' {
-                @(
-                    "Is your goal description/captioning, alt-text, design critique, or transformation ideas?"
-                    "Should the AI focus on visual details, emotional impact, or practical information?"
-                    "Are there branding or style constraints (colors, fonts, logo usage) the AI should respect?"
-                )
-            }
-            'Audio' {
-                @(
-                    "Do you primarily want transcription, summary, or key-insights extraction?"
-                    "Is the audio conversational, a lecture, music, or something else?"
-                    "Should timestamps or speaker labels be preserved in the refined output?"
-                )
-            }
-            'Video' {
-                @(
-                    "Is your main goal a summary, shot-by-shot breakdown, or script refinement?"
-                    "Should the AI focus on dialogue, visuals, pacing, or all of the above?"
-                    "Do you need content suitable for social clips (short hooks, titles, descriptions)?"
-                )
-            }
-            default {
-                @(
-                    "What kind of content is inside this file (text, binary config, mixed, proprietary)?"
-                    "In plain language, what do you wish an expert AI could help you accomplish with it?"
-                    "Are there any safety, privacy, or compliance constraints the AI must keep in mind?"
-                )
-            }
-        }
-    }
-
-    function Get-RefinerUserPrompt {
-        <#
-    .SYNOPSIS
-        Central entry point for the Prompt Refiner’s “input mode”.
-        Lets the user:
-          - enter a free-form text prompt, OR
-          - pick a file and answer file-specific questions,
-        then returns a composed prompt string for the existing refinement loop.
-
-    .OUTPUTS
-        [string]  – the composed user prompt, or 'exit' to signal termination,
-                    or $null if there was no usable input.
-    #>
-        [CmdletBinding()]
-        param()
-
-        Write-Host ""
-        Write-Host "=== Prompt Refiner Input Mode ===" -ForegroundColor Cyan
-        Write-Host "  1) Free-form text prompt"
-        Write-Host "  2) Work with a file (multi-modal helper)"
-        Write-Host "  X) Exit"
-        $choice = Read-Host "Select an option (1/2/X)"
-
-        switch ($choice) {
-            '1' {
-                # Plain text mode – equivalent to your old Read-Host call
-                $prompt = Read-Host "How can I assist you today? (type your prompt text)"
-                if ([string]::IsNullOrWhiteSpace($prompt)) {
-                    Write-Log "User selected text mode but provided an empty prompt." "WARN"
-                    return $null
-                }
-                return $prompt
-            }
-
-            '2' {
-                # File-driven mode
-                $filePath = Select-RefinerInputFile
-                if (-not $filePath) {
-                    # User cancelled or something failed
-                    return $null
-                }
-
-                if (-not (Test-Path -LiteralPath $filePath)) {
-                    Write-Log "Selected file path does not exist: $filePath" "ERROR"
-                    return $null
-                }
-
-                $category = Get-RefinerFileCategory -Path $filePath
-                $fileName = [System.IO.Path]::GetFileName($filePath)
-                $extension = [System.IO.Path]::GetExtension($filePath)
-
-                Write-Log "Selected file '$fileName' detected as category '$category'." "INFO"
-
-                # High-level goal first
-                $goal = Read-Host "Briefly describe what you want the AI to do with this $category file"
-                if ([string]::IsNullOrWhiteSpace($goal)) {
-                    $goal = "Help me work with this $category file in the most useful way."
-                }
-
-                # Category-specific refiners
-                $questions = Get-RefinementQuestionsForFileCategory -Category $category
-                $answers = @()
-
-                foreach ($q in $questions) {
-                    $answer = Read-Host $q
-                    if (-not [string]::IsNullOrWhiteSpace($answer)) {
-                        # Keep Q/A pairs so the model has structured context
-                        $answers += "- $q`n  -> $answer"
-                    }
-                }
-
-                $answersText = if ($answers.Count -gt 0) {
-                    $answers -join "`n"
-                }
-                else {
-                    "No additional preferences were specified."
-                }
-
-                # Final composed prompt that your existing refinement loop can treat as normal text
-                $composedPrompt = @"
-You are a prompt-engineering assistant helping a user work with a local file.
-
-File details:
-- File name: $fileName
-- Full path (local to the user): $filePath
-- Extension / detected category: $extension ($category)
-
-User goal for this file:
-$goal
-
-Additional preferences and constraints (Q & A):
-$answersText
-
-Using this information, refine this into a high-quality prompt that the user can send to an AI model that is able to access or upload the file as needed. Make the prompt explicit about:
-- what to do with the file,
-- any constraints or priorities,
-- what a "good" answer would look like,
-- and any follow-up outputs (summaries, code, diagrams, etc.) that would be useful.
-"@
-
-                return $composedPrompt
-            }
-
-            'X' { return 'exit' }
-            'x' { return 'exit' }
-
-            default {
-                Write-Log "Unrecognized input mode '$choice'. Falling back to text mode." "WARN"
-                $prompt = Read-Host "How can I assist you today? (type your prompt text)"
-                if ([string]::IsNullOrWhiteSpace($prompt)) {
-                    Write-Log "Fallback text prompt was also empty." "WARN"
-                    return $null
-                }
-                return $prompt
-            }
-        }
-    }
-
-    ### END: Refiner_MultiModal_Helpers
-
-    # ===========================
-    # MAIN LOOP
-    # ===========================
 
     do {
-        # Centralized intake – either free-form text or file-driven prompt
-        $UserPrompt = Get-RefinerUserPrompt
+        $UserPrompt = Read-Host "How can I assist you today? (type 'exit' to quit)"
+        if ($UserPrompt -eq "exit") { break }
 
-        if (-not $UserPrompt) {
-            # Nothing usable – safest move is to bail out rather than hammer the API with garbage
-            Write-Log "No valid prompt was provided. Ending session." "INFO"
-            break
-        }
-
-        if ($UserPrompt -eq "exit") {
-            Write-Log "User requested exit from Prompt Refiner." "INFO"
-            break
-        }
-
-        # Create folder with AI-generated short name based on the composed prompt
+        # Create folder with AI-generated short name
         $SessionFolder = New-SessionFolder -OriginalPrompt $UserPrompt
         Write-Log "Session outputs will be saved under: $SessionFolder" "INFO"
 
-        $RefinmentGoals = Read-Host "Enter refinement goals (or press Enter to use default goals)"
+        $RefinmentGoals = Read-Host "Enter refinement goals (or press Enter to skip)"
         if (-not $RefinmentGoals) { $RefinmentGoals = $Config.RefinementGoalsTemplate }
 
         $BaselineScript = $UserPrompt
@@ -639,8 +339,11 @@ Using this information, refine this into a high-quality prompt that the user can
         $TotalTokenUsage += $InitialCall.TotalTokens
         $TotalPromptTokens += $InitialCall.PromptTokens
         $TotalCompletionTokens += $InitialCall.CompletionTokens
-
-        $EffectiveIterations = ($InitialResponse.Length -lt 100) ? 1 : $Config.RefinementIterations
+if ($null -eq $InitialResponse -or $InitialResponse.Length -lt 100) {
+    $EffectiveIterations = 1
+} else {
+    $EffectiveIterations = $Config.RefinementIterations
+}
 
         Write-Log "Initial GPT Response: $InitialResponse" "SUCCESS"
         Save-IterationOutput -IterationNumber 0 -Prompt $UserPrompt -Response $InitialResponse -SessionFolder $SessionFolder
