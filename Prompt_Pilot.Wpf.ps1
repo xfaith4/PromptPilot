@@ -1,4 +1,4 @@
-[CmdletBinding()]
+[cmdletBinding()]
 param()
 
 # =============================================================================
@@ -36,6 +36,8 @@ $script:ProviderDefinitions    = [ordered]@{
         ChatEndpointPath = 'chat/completions'
         EnvVars          = @('OPENAI_API_KEY')
         DefaultModel     = 'gpt-5-mini'
+        DefaultPricePer1kInputTokens  = $script:PricePer1kInputTokens
+        DefaultPricePer1kOutputTokens = $script:PricePer1kOutputTokens
         Protocol         = 'OpenAI'
     }
     Anthropic = [ordered]@{
@@ -44,6 +46,8 @@ $script:ProviderDefinitions    = [ordered]@{
         ChatEndpointPath = 'v1/messages'
         EnvVars          = @('ANTHROPIC_API_KEY')
         DefaultModel     = 'claude-sonnet-4-20250514'
+        DefaultPricePer1kInputTokens  = $script:PricePer1kInputTokens
+        DefaultPricePer1kOutputTokens = $script:PricePer1kOutputTokens
         Protocol         = 'Anthropic'
     }
     GitHubCopilot = [ordered]@{
@@ -52,11 +56,14 @@ $script:ProviderDefinitions    = [ordered]@{
         ChatEndpointPath = 'chat/completions'
         EnvVars          = @('GITHUB_COPILOT_API_KEY', 'GITHUB_TOKEN')
         DefaultModel     = 'gpt-4.1'
+        DefaultPricePer1kInputTokens  = $script:PricePer1kInputTokens
+        DefaultPricePer1kOutputTokens = $script:PricePer1kOutputTokens
         Protocol         = 'OpenAI'
     }
 }
 $script:ActiveProvider         = $script:DefaultProvider
 $script:SavedApiKeys           = @{}
+$script:ProviderSettings       = @{}
 $script:SettingsDir            = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Prompt Pilot'
 $script:SettingsPath           = Join-Path $script:SettingsDir 'settings.json'
 
@@ -131,6 +138,32 @@ function Get-ProviderDefinition {
     return $script:ProviderDefinitions[$ProviderName]
 }
 
+function New-ProviderRuntimeSettings {
+    param(
+        [string]$ProviderName = $script:ActiveProvider
+    )
+
+    $provider = Get-ProviderDefinition -ProviderName $ProviderName
+
+    return [ordered]@{
+        Model                   = [string]$provider.DefaultModel
+        PricePer1kInputTokens   = [double]$provider.DefaultPricePer1kInputTokens
+        PricePer1kOutputTokens  = [double]$provider.DefaultPricePer1kOutputTokens
+    }
+}
+
+function Get-ProviderRuntimeSettings {
+    param(
+        [string]$ProviderName = $script:ActiveProvider
+    )
+
+    if (-not $script:ProviderSettings.ContainsKey($ProviderName) -or -not $script:ProviderSettings[$ProviderName]) {
+        $script:ProviderSettings[$ProviderName] = New-ProviderRuntimeSettings -ProviderName $ProviderName
+    }
+
+    return $script:ProviderSettings[$ProviderName]
+}
+
 function Protect-Secret {
     param([string]$PlainText)
 
@@ -166,10 +199,12 @@ function Load-ProviderSettings {
     $settings = @{
         ActiveProvider = $script:DefaultProvider
         Keys           = @{}
+        Providers      = @{}
     }
 
     foreach ($providerName in $script:ProviderDefinitions.Keys) {
         $settings.Keys[$providerName] = $null
+        $settings.Providers[$providerName] = New-ProviderRuntimeSettings -ProviderName $providerName
     }
 
     if (-not (Test-Path -LiteralPath $script:SettingsPath)) {
@@ -190,6 +225,34 @@ function Load-ProviderSettings {
                     $protectedValue = [string]$property.Value
                     $settings.Keys[$providerName] = Unprotect-Secret -ProtectedText $protectedValue
                 }
+            }
+        }
+
+        if ($rawSettings.Providers) {
+            foreach ($providerName in $script:ProviderDefinitions.Keys) {
+                $property = $rawSettings.Providers.PSObject.Properties[$providerName]
+                if (-not $property -or -not $property.Value) {
+                    continue
+                }
+
+                $providerSettings = New-ProviderRuntimeSettings -ProviderName $providerName
+                $rawProvider = $property.Value
+
+                if ($rawProvider.Model -and -not [string]::IsNullOrWhiteSpace([string]$rawProvider.Model)) {
+                    $providerSettings.Model = [string]$rawProvider.Model
+                }
+
+                $inputPrice = $providerSettings.PricePer1kInputTokens
+                if ($rawProvider.PricePer1kInputTokens -ne $null -and [double]::TryParse([string]$rawProvider.PricePer1kInputTokens, [ref]$inputPrice)) {
+                    $providerSettings.PricePer1kInputTokens = $inputPrice
+                }
+
+                $outputPrice = $providerSettings.PricePer1kOutputTokens
+                if ($rawProvider.PricePer1kOutputTokens -ne $null -and [double]::TryParse([string]$rawProvider.PricePer1kOutputTokens, [ref]$outputPrice)) {
+                    $providerSettings.PricePer1kOutputTokens = $outputPrice
+                }
+
+                $settings.Providers[$providerName] = $providerSettings
             }
         }
     }
@@ -219,9 +282,20 @@ function Save-ProviderSettings {
             }
         }
 
+        $providersPayload = [ordered]@{}
+        foreach ($providerName in $script:ProviderDefinitions.Keys) {
+            $providerSettings = Get-ProviderRuntimeSettings -ProviderName $providerName
+            $providersPayload[$providerName] = [ordered]@{
+                Model                  = [string]$providerSettings.Model
+                PricePer1kInputTokens  = [double]$providerSettings.PricePer1kInputTokens
+                PricePer1kOutputTokens = [double]$providerSettings.PricePer1kOutputTokens
+            }
+        }
+
         $settingsPayload = [ordered]@{
             ActiveProvider = $script:ActiveProvider
             Keys           = $keysPayload
+            Providers      = $providersPayload
         }
 
         $settingsPayload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:SettingsPath -Encoding UTF8
@@ -279,24 +353,30 @@ function Set-ActiveProvider {
         [switch]$SkipSave
     )
 
-    $previousProvider = if ($script:ProviderDefinitions.Contains($script:ActiveProvider)) {
-        Get-ProviderDefinition -ProviderName $script:ActiveProvider
+    $previousProviderName = if ($script:ProviderDefinitions.Contains($script:ActiveProvider)) {
+        [string]$script:ActiveProvider
     }
     else {
         $null
     }
-    $nextProvider = Get-ProviderDefinition -ProviderName $ProviderName
+    $previousProviderSettings = if ($previousProviderName) {
+        Get-ProviderRuntimeSettings -ProviderName $previousProviderName
+    }
+    else {
+        $null
+    }
+    $nextProviderSettings = Get-ProviderRuntimeSettings -ProviderName $ProviderName
 
     $script:ActiveProvider = $ProviderName
 
     if ($script:ModelTextBox) {
         $shouldUpdateModel = [string]::IsNullOrWhiteSpace($script:ModelTextBox.Text)
-        if (-not $shouldUpdateModel -and $previousProvider) {
-            $shouldUpdateModel = ($script:ModelTextBox.Text -eq $previousProvider.DefaultModel)
+        if (-not $shouldUpdateModel -and $previousProviderSettings) {
+            $shouldUpdateModel = ($script:ModelTextBox.Text -eq [string]$previousProviderSettings.Model)
         }
 
         if ($shouldUpdateModel) {
-            $script:ModelTextBox.Text = $nextProvider.DefaultModel
+            $script:ModelTextBox.Text = [string]$nextProviderSettings.Model
         }
     }
 
@@ -627,6 +707,7 @@ function Invoke-OpenAIRefinement {
     )
 
     $provider = Get-ProviderDefinition
+    $providerSettings = Get-ProviderRuntimeSettings
 
     # [9] Resolve API key (may show interactive prompt)
     $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
@@ -693,8 +774,8 @@ Use this context to make the refined prompts more concrete and useful, but do no
     $sampleUserContent     = $effectiveProjectContext + $currentDraft + $RefinementGoals + $effectiveFilePath
     $estimatedInputPerIter = (Get-TokenEstimate -Text $systemInstructions) + (Get-TokenEstimate -Text $sampleUserContent)
     $estimatedTotalTokens  = $estimatedInputPerIter * $Iterations * 2   # x2 approximates output volume
-    $estimatedCost         = (($estimatedInputPerIter * $Iterations / 1000.0) * $script:PricePer1kInputTokens) +
-                             (($estimatedInputPerIter * $Iterations / 1000.0) * $script:PricePer1kOutputTokens)
+    $estimatedCost         = (($estimatedInputPerIter * $Iterations / 1000.0) * [double]$providerSettings.PricePer1kInputTokens) +
+                             (($estimatedInputPerIter * $Iterations / 1000.0) * [double]$providerSettings.PricePer1kOutputTokens)
 
     if ($estimatedCost -gt 0.05) {
         $confirmMsg = (
@@ -806,8 +887,8 @@ Do not include your own commentary or analysis, only the final prompt the user s
     $totalTokens = $totalInputTokens + $totalOutputTokens
     $cost = 0.0
     if ($totalTokens -gt 0) {
-        $cost = (($totalInputTokens  / 1000.0) * $script:PricePer1kInputTokens) +
-                (($totalOutputTokens / 1000.0) * $script:PricePer1kOutputTokens)
+        $cost = (($totalInputTokens  / 1000.0) * [double]$providerSettings.PricePer1kInputTokens) +
+            (($totalOutputTokens / 1000.0) * [double]$providerSettings.PricePer1kOutputTokens)
     }
 
     return [pscustomobject]@{
@@ -834,6 +915,7 @@ function Invoke-OpenAIAnswer {
     )
 
     $provider = Get-ProviderDefinition
+    $providerSettings = Get-ProviderRuntimeSettings
 
     # [9] Resolve API key
     $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
@@ -886,8 +968,8 @@ function Invoke-OpenAIAnswer {
     $totalTokens = $totalInputTokens + $totalOutputTokens
     $cost = 0.0
     if ($totalTokens -gt 0) {
-        $cost = (($totalInputTokens  / 1000.0) * $script:PricePer1kInputTokens) +
-                (($totalOutputTokens / 1000.0) * $script:PricePer1kOutputTokens)
+        $cost = (($totalInputTokens  / 1000.0) * [double]$providerSettings.PricePer1kInputTokens) +
+            (($totalOutputTokens / 1000.0) * [double]$providerSettings.PricePer1kOutputTokens)
     }
 
     return [pscustomobject]@{
@@ -984,6 +1066,7 @@ if (-not $script:GoalsTextBox.Text) {
 
 $loadedProviderSettings = Load-ProviderSettings
 $script:SavedApiKeys = $loadedProviderSettings.Keys
+$script:ProviderSettings = $loadedProviderSettings.Providers
 $script:CurrentMode = 'Refine'
 $script:UsageTextBlock.Text = "Tokens: 0 | Cost: `$0.000000"
 Set-ActiveProvider -ProviderName $loadedProviderSettings.ActiveProvider -SkipSave
@@ -1045,7 +1128,8 @@ function Run-Refinement {
     $projectContext = $script:ProjectContextTextBox.Text
     $file           = $script:FilePathTextBox.Text
     # [1] Fall back to the centralised default model
-    $model          = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { $script:DefaultModel }
+    $providerSettings = Get-ProviderRuntimeSettings
+    $model          = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { [string]$providerSettings.Model }
 
     $iterRaw    = $script:IterationsTextBox.Text
     $iterations = $script:DefaultIterations
@@ -1115,7 +1199,8 @@ function Run-AnswerTask {
 
     $file  = $script:FilePathTextBox.Text
     # [1] Fall back to the centralised default model
-    $model = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { $script:DefaultModel }
+    $providerSettings = Get-ProviderRuntimeSettings
+    $model = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { [string]$providerSettings.Model }
 
     Show-Status -Message "Running task..." -Usage "Tokens: 0 | Cost: `$0.000000"
 
@@ -1408,19 +1493,25 @@ $script:LogToFileCheckBox.Add_Unchecked({
 $script:MenuSettingsApiKey.Add_Click({
     $settingsXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Settings — API Keys" Width="500" Height="310"
+        Title="Settings — Provider Settings" Width="500" Height="470"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False">
     <StackPanel Margin="14">
         <TextBlock Text="Active provider:" Margin="0,0,0,4" />
         <ComboBox Name="ProviderComboBox" Margin="0,0,0,10" />
         <TextBlock Name="StatusLabel" TextWrapping="Wrap" Margin="0,0,0,10" />
+        <TextBlock Text="Model for selected provider:" Margin="0,0,0,4" />
+        <TextBox Name="ModelBox" Margin="0,0,0,10" />
+        <TextBlock Text="Input price per 1K tokens (USD):" Margin="0,0,0,4" />
+        <TextBox Name="InputPriceBox" Margin="0,0,0,10" />
+        <TextBlock Text="Output price per 1K tokens (USD):" Margin="0,0,0,4" />
+        <TextBox Name="OutputPriceBox" Margin="0,0,0,10" />
         <CheckBox Name="RemoveSavedKeyCheckBox"
                   Content="Remove saved key for selected provider"
                   Margin="0,0,0,10" />
         <TextBlock Text="New API key (leave blank to keep current):" Margin="0,0,0,4" />
         <PasswordBox Name="KeyBox" Margin="0,0,0,10" />
-        <TextBlock Text="Keys entered here are saved securely for the current Windows user. Run-time prompts still remain session-only."
+        <TextBlock Text="Models and token prices are stored per provider. Keys entered here are saved securely for the current Windows user. Run-time prompts still remain session-only."
                    TextWrapping="Wrap"
                    Foreground="Gray"
                    FontSize="11"
@@ -1437,6 +1528,9 @@ $script:MenuSettingsApiKey.Add_Click({
     $settingsDialog = [Windows.Markup.XamlReader]::Load($settingsReader)
     $providerCombo   = $settingsDialog.FindName('ProviderComboBox')
     $statusLabel    = $settingsDialog.FindName('StatusLabel')
+    $modelBox       = $settingsDialog.FindName('ModelBox')
+    $inputPriceBox  = $settingsDialog.FindName('InputPriceBox')
+    $outputPriceBox = $settingsDialog.FindName('OutputPriceBox')
     $removeCheckBox = $settingsDialog.FindName('RemoveSavedKeyCheckBox')
     $keyBox         = $settingsDialog.FindName('KeyBox')
     $okBtn          = $settingsDialog.FindName('OkBtn')
@@ -1455,7 +1549,11 @@ $script:MenuSettingsApiKey.Add_Click({
 
         $provider = Get-ProviderDefinition -ProviderName $selectedProvider
         $state = Get-ProviderCredentialState -ProviderName $selectedProvider
-        $statusLabel.Text = "{0} is currently using {1}. Leave the key box blank to keep it, or paste a new key to replace the saved value." -f $provider.DisplayName, $state.Summary
+        $providerSettings = Get-ProviderRuntimeSettings -ProviderName $selectedProvider
+        $statusLabel.Text = "{0} is currently using {1}. Update the model and pricing if needed, and leave the key box blank to keep the current saved value." -f $provider.DisplayName, $state.Summary
+        $modelBox.Text = [string]$providerSettings.Model
+        $inputPriceBox.Text = ([double]$providerSettings.PricePer1kInputTokens).ToString('0.######')
+        $outputPriceBox.Text = ([double]$providerSettings.PricePer1kOutputTokens).ToString('0.######')
     }
 
     $providerCombo.Add_SelectionChanged($updateStatus)
@@ -1479,20 +1577,57 @@ $script:MenuSettingsApiKey.Add_Click({
             $selectedProvider = $script:DefaultProvider
         }
 
-        Set-ActiveProvider -ProviderName $selectedProvider
+        $providerSettings = Get-ProviderRuntimeSettings -ProviderName $selectedProvider
+        $modelValue = if ([string]::IsNullOrWhiteSpace($modelBox.Text)) {
+            [string]$providerSettings.Model
+        }
+        else {
+            $modelBox.Text.Trim()
+        }
+
+        $inputPrice = [double]$providerSettings.PricePer1kInputTokens
+        if (-not [string]::IsNullOrWhiteSpace($inputPriceBox.Text) -and -not [double]::TryParse($inputPriceBox.Text.Trim(), [ref]$inputPrice)) {
+            [System.Windows.MessageBox]::Show(
+                "Enter a valid input price per 1K tokens.",
+                "Invalid setting",
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Warning
+            ) | Out-Null
+            return
+        }
+
+        $outputPrice = [double]$providerSettings.PricePer1kOutputTokens
+        if (-not [string]::IsNullOrWhiteSpace($outputPriceBox.Text) -and -not [double]::TryParse($outputPriceBox.Text.Trim(), [ref]$outputPrice)) {
+            [System.Windows.MessageBox]::Show(
+                "Enter a valid output price per 1K tokens.",
+                "Invalid setting",
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Warning
+            ) | Out-Null
+            return
+        }
+
+        $script:ProviderSettings[$selectedProvider] = [ordered]@{
+            Model                  = $modelValue
+            PricePer1kInputTokens  = [double]$inputPrice
+            PricePer1kOutputTokens = [double]$outputPrice
+        }
+
+        Set-ActiveProvider -ProviderName $selectedProvider -SkipSave
 
         if ($removeCheckBox.IsChecked -eq $true) {
             $script:SavedApiKeys[$selectedProvider] = $null
             $script:SessionApiKeys.Remove($selectedProvider) | Out-Null
-            Save-ProviderSettings
             Append-Log -Message ("Saved API key removed for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
         }
 
         if (-not [string]::IsNullOrWhiteSpace($keyBox.Password)) {
             $script:SavedApiKeys[$selectedProvider] = $keyBox.Password
-            Save-ProviderSettings
             Append-Log -Message ("Saved API key updated for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
         }
+
+        Save-ProviderSettings
+        Append-Log -Message ("Provider settings updated for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
 
         Update-ProviderIndicator
         Show-Status -Message ("Active provider set to {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
