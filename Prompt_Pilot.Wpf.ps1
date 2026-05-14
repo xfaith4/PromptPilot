@@ -76,6 +76,10 @@ $script:SessionApiKeys = @{}
 # [7] Active log file path — $null means file logging is disabled
 $script:LogFilePath = $null
 
+# [11] Answer-mode background execution state
+$script:AnswerTaskState = $null
+$script:AnswerTaskTimer = $null
+
 # =============================================================================
 # Utility functions
 # =============================================================================
@@ -981,6 +985,214 @@ function Invoke-OpenAIAnswer {
     }
 }
 
+function Complete-AnswerTask {
+    param(
+        [Parameter(Mandatory)][System.IAsyncResult]$Handle,
+        [Parameter(Mandatory)][System.Management.Automation.PowerShell]$PowerShellInstance
+    )
+
+    try {
+        $result = $PowerShellInstance.EndInvoke($Handle)
+        if ($result.Count -lt 1) {
+            throw "No response object returned for task execution."
+        }
+
+        $taskResult = $result[0]
+        $script:TaskOutputTextBox.Text = [string]$taskResult.OutputText
+
+        if ($taskResult.Warnings) {
+            foreach ($warning in $taskResult.Warnings) {
+                Append-Log -Message ([string]$warning)
+            }
+        }
+
+        $usageText = "Tokens: {0} (in {1} / out {2}) | Cost: `${3}" -f `
+            $taskResult.TotalTokens, $taskResult.TotalInputTokens, $taskResult.TotalOutputTokens, $taskResult.TotalCostUsd
+        Show-Status -Message "Task complete." -Usage $usageText
+        Append-Log -Message ("Task complete. {0}" -f $usageText)
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($PowerShellInstance.Streams.Error.Count -gt 0) {
+            $message = [string]$PowerShellInstance.Streams.Error[0]
+        }
+
+        Append-Log -Message ("Task failed: {0}" -f $message)
+        Show-Status -Message ("Task failed: {0}" -f $message)
+        [System.Windows.MessageBox]::Show(
+            "Failed to run task: $message",
+            "Error",
+            [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Error
+        ) | Out-Null
+    }
+    finally {
+        Set-BusyState -IsBusy $false
+        $PowerShellInstance.Dispose()
+        $script:AnswerTaskState = $null
+    }
+}
+
+function Start-AnswerTask {
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter()][string]$FilePath = '',
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][string]$ProviderName,
+        [Parameter(Mandatory)][string]$ApiKey
+    )
+
+    if ($script:AnswerTaskState) {
+        throw "A task is already running."
+    }
+
+    $provider = Get-ProviderDefinition -ProviderName $ProviderName
+    $providerSettings = Get-ProviderRuntimeSettings -ProviderName $ProviderName
+
+    $backgroundScript = {
+        param($Prompt, $FilePath, $Model, $ProviderName, $Provider, $ProviderSettings, $ApiKey)
+
+        if ($Prompt.Length -gt 32000) {
+            throw ("Prompt is too long ({0} characters). Maximum is 32,000 characters." -f $Prompt.Length)
+        }
+
+        $promptWithContext = $Prompt
+        $warnings = [System.Collections.Generic.List[string]]::new()
+        if (-not [string]::IsNullOrWhiteSpace($FilePath)) {
+            if (-not (Test-Path -LiteralPath $FilePath)) {
+                $warnings.Add("WARNING: File not found — omitting file reference: $FilePath")
+            }
+            else {
+                $fileSize = (Get-Item -LiteralPath $FilePath).Length
+                if ($fileSize -gt (512 * 1024)) {
+                    $warnings.Add(("WARNING: File exceeds 512 KB ({0} bytes) — omitting file reference." -f $fileSize))
+                }
+                else {
+                    $promptWithContext = "$Prompt`n`nFile reference: $FilePath"
+                }
+            }
+        }
+
+        $messages = @(
+            @{ role = 'user'; content = $promptWithContext }
+        )
+
+        $endpoint = "{0}/{1}" -f $Provider.ApiBase.TrimEnd('/'), $Provider.ChatEndpointPath.TrimStart('/')
+        switch ($Provider.Protocol) {
+            'Anthropic' {
+                $headers = @{
+                    'x-api-key'         = $ApiKey
+                    'anthropic-version' = '2023-06-01'
+                    'content-type'      = 'application/json'
+                }
+
+                $body = @{
+                    model      = $Model
+                    max_tokens = 4096
+                    messages   = @(
+                        foreach ($message in $messages) {
+                            @{
+                                role    = $message.role
+                                content = @(
+                                    @{
+                                        type = 'text'
+                                        text = [string]$message.content
+                                    }
+                                )
+                            }
+                        }
+                    )
+                }
+
+                $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body ($body | ConvertTo-Json -Depth 10) -TimeoutSec 120
+                $responseText = @(
+                    foreach ($part in $response.content) {
+                        if ($part.type -eq 'text') {
+                            $part.text
+                        }
+                    }
+                ) -join "`n"
+
+                $promptTokens = [int]$response.usage.input_tokens
+                $completionTokens = [int]$response.usage.output_tokens
+                $text = $responseText
+            }
+            default {
+                $headers = @{
+                    'Authorization' = "Bearer $ApiKey"
+                    'Content-Type'  = 'application/json'
+                }
+
+                $body = @{
+                    model    = $Model
+                    messages = $messages
+                } | ConvertTo-Json -Depth 10
+
+                $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body $body -TimeoutSec 120
+                $promptTokens = [int]$response.usage.prompt_tokens
+                $completionTokens = [int]$response.usage.completion_tokens
+                $text = $response.choices[0].message.content
+            }
+        }
+
+        if (-not $text) {
+            throw "No text content returned from $($Provider.DisplayName) for task execution."
+        }
+
+        $totalTokens = $promptTokens + $completionTokens
+        $cost = 0.0
+        if ($totalTokens -gt 0) {
+            $cost = (($promptTokens / 1000.0) * [double]$ProviderSettings.PricePer1kInputTokens) +
+                (($completionTokens / 1000.0) * [double]$ProviderSettings.PricePer1kOutputTokens)
+        }
+
+        return [pscustomobject]@{
+            OutputText        = $text.Trim()
+            TotalTokens       = $totalTokens
+            TotalInputTokens  = $promptTokens
+            TotalOutputTokens = $completionTokens
+            TotalCostUsd      = [Math]::Round($cost, 6)
+            Warnings          = @($warnings)
+        }
+    }
+
+    $powerShellInstance = [System.Management.Automation.PowerShell]::Create()
+    $null = $powerShellInstance.AddScript($backgroundScript.ToString())
+    $null = $powerShellInstance.AddArgument($Prompt)
+    $null = $powerShellInstance.AddArgument($FilePath)
+    $null = $powerShellInstance.AddArgument($Model)
+    $null = $powerShellInstance.AddArgument($ProviderName)
+    $null = $powerShellInstance.AddArgument($provider)
+    $null = $powerShellInstance.AddArgument($providerSettings)
+    $null = $powerShellInstance.AddArgument($ApiKey)
+
+    $handle = $powerShellInstance.BeginInvoke()
+    $script:AnswerTaskState = [pscustomobject]@{
+        PowerShell = $powerShellInstance
+        Handle     = $handle
+    }
+
+    if (-not $script:AnswerTaskTimer) {
+        $script:AnswerTaskTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:AnswerTaskTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+        $script:AnswerTaskTimer.Add_Tick({
+            if (-not $script:AnswerTaskState) {
+                $script:AnswerTaskTimer.Stop()
+                return
+            }
+
+            if (-not $script:AnswerTaskState.Handle.IsCompleted) {
+                return
+            }
+
+            $script:AnswerTaskTimer.Stop()
+            Complete-AnswerTask -Handle $script:AnswerTaskState.Handle -PowerShellInstance $script:AnswerTaskState.PowerShell
+        })
+    }
+
+    $script:AnswerTaskTimer.Start()
+}
+
 # =============================================================================
 # Load XAML and create window
 # =============================================================================
@@ -1183,8 +1395,8 @@ function Run-Refinement {
 function Run-AnswerTask {
     <#
     .SYNOPSIS
-        Reads UI inputs, calls the OpenAI API to execute the prompt, and displays
-        the model's response in the Task Output panel.
+        Reads UI inputs, starts a background task request, and updates the UI
+        when the model's response is ready.
     #>
     $promptToRun = $script:PromptTextBox.Text
     if ([string]::IsNullOrWhiteSpace($promptToRun)) {
@@ -1203,24 +1415,21 @@ function Run-AnswerTask {
     $model = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { [string]$providerSettings.Model }
 
     Show-Status -Message "Running task..." -Usage "Tokens: 0 | Cost: `$0.000000"
+    $script:TaskOutputTextBox.Text = ''
 
     Set-BusyState -IsBusy $true -Message ("Task started (model: {0})" -f $model)
     try {
-        $result = Invoke-OpenAIAnswer -Prompt $promptToRun -FilePath $file -Model $model
+        $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
+        Start-AnswerTask -Prompt $promptToRun -FilePath $file -Model $model -ProviderName $script:ActiveProvider -ApiKey $apiKey
+        if ($script:CancelButton)          { $script:CancelButton.IsEnabled = $false }
+        if ($script:AcceptIterationButton) { $script:AcceptIterationButton.IsEnabled = $false }
+        Append-Log -Message "Task request is running in the background."
     }
     catch {
+        Set-BusyState -IsBusy $false
         Append-Log -Message ("Task failed: {0}" -f $_.Exception.Message)
         throw
     }
-    finally {
-        Set-BusyState -IsBusy $false
-    }
-
-    $script:TaskOutputTextBox.Text = $result.OutputText
-    $usageText = "Tokens: {0} (in {1} / out {2}) | Cost: `${3}" -f `
-        $result.TotalTokens, $result.TotalInputTokens, $result.TotalOutputTokens, $result.TotalCostUsd
-    Show-Status -Message "Task complete." -Usage $usageText
-    Append-Log -Message ("Task complete. {0}" -f $usageText)
 }
 
 function Invoke-ModeAction {
@@ -1731,6 +1940,23 @@ $script:MenuHelpAbout.Add_Click({
 Set-Mode -Mode 'Refine'
 Update-ProviderIndicator
 Append-Log -Message "Ready."
+$window.Add_Closing({
+    if ($script:AnswerTaskTimer) {
+        $script:AnswerTaskTimer.Stop()
+    }
+
+    if ($script:AnswerTaskState -and $script:AnswerTaskState.PowerShell) {
+        try {
+            $script:AnswerTaskState.PowerShell.Stop()
+        }
+        catch {
+        }
+        finally {
+            $script:AnswerTaskState.PowerShell.Dispose()
+            $script:AnswerTaskState = $null
+        }
+    }
+})
 $null = $window.ShowDialog()
 
 <#
