@@ -1,0 +1,349 @@
+<svg width="880" height="556" viewBox="0 0 880 556" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Prompt Pilot — animated workflow demo
+    30-second looping SVG animation showing the 5-step refinement workflow.
+    Phases:
+      0–6 s   Phase 1 – Enter a rough prompt
+      6–12 s  Phase 2 – Set goals and project context
+      12–16 s Phase 3 – Click Run Refinement
+      16–24 s Phase 4 – AI structures the prompt (output builds)
+      24–30 s Phase 5 – Copy, preset, or Answer mode
+  -->
+  <defs>
+    <style>
+      text { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; }
+      .code { font-family: Consolas, 'Courier New', monospace; }
+    </style>
+  </defs>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- WINDOW BACKGROUND + BORDER                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <rect x="0" y="0" width="880" height="522" fill="#f0f0f0" stroke="#a0a0a0" stroke-width="1"/>
+
+  <!-- ═══ MENU BAR ═══ -->
+  <rect x="0" y="0" width="880" height="22" fill="#f5f5f5"/>
+  <line x1="0" y1="22" x2="880" y2="22" stroke="#d8d8d8" stroke-width="1"/>
+  <text x="10" y="15" font-size="11" fill="#333">_Settings</text>
+  <text x="72" y="15" font-size="11" fill="#333">_Help</text>
+
+  <!-- ═══ APP HEADER ═══ -->
+  <text x="10" y="44" font-size="20" font-weight="bold" fill="#1a1a1a">Prompt Pilot</text>
+  <line x1="0" y1="50" x2="880" y2="50" stroke="#d0d0d0" stroke-width="0.5"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- LEFT PANEL — INPUT FIELDS                                          -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- Base Prompt GroupBox -->
+  <rect x="8"  y="58" width="432" height="108" fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="12" y="52" width="80"  height="14"  fill="#f0f0f0"/>
+  <text x="16" y="64" font-size="11" fill="#333">Base Prompt</text>
+  <rect x="14" y="66" width="420" height="94"  fill="#fafafa" stroke="#d5d5d5" stroke-width="1"/>
+
+  <!-- Refinement Goals GroupBox -->
+  <rect x="8"  y="174" width="432" height="78" fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="12" y="168" width="116" height="14" fill="#f0f0f0"/>
+  <text x="16" y="180" font-size="11" fill="#333">Refinement Goals</text>
+  <rect x="14" y="184" width="420" height="62" fill="#fafafa" stroke="#d5d5d5" stroke-width="1"/>
+
+  <!-- Project Context GroupBox -->
+  <rect x="8"  y="260" width="432" height="52" fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="12" y="254" width="156" height="14" fill="#f0f0f0"/>
+  <text x="16" y="266" font-size="11" fill="#333">Project Context (optional)</text>
+  <rect x="14" y="270" width="420" height="36" fill="#fafafa" stroke="#d5d5d5" stroke-width="1"/>
+
+  <!-- Mode GroupBox -->
+  <rect x="8"  y="320" width="432" height="40" fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="12" y="314" width="40"  height="14" fill="#f0f0f0"/>
+  <text x="16" y="326" font-size="11" fill="#333">Mode</text>
+  <!-- Refine Prompt radio (selected) -->
+  <circle cx="22" cy="341" r="5.5" fill="white" stroke="#999" stroke-width="1.5"/>
+  <circle cx="22" cy="341" r="3"   fill="#0078d4"/>
+  <text x="32" y="345" font-size="11" fill="#222">Refine Prompt</text>
+  <!-- Answer Task radio -->
+  <circle cx="132" cy="341" r="5.5" fill="white" stroke="#999" stroke-width="1.5"/>
+  <text x="142" y="345" font-size="11" fill="#666">Answer Task</text>
+  <!-- Use this Prompt button -->
+  <rect x="220" y="333" width="98" height="18" rx="2" fill="#ebebeb" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="269" y="346" font-size="10" fill="#444" text-anchor="middle">Use this Prompt</text>
+
+  <!-- Iterations / Model row -->
+  <text x="10"  y="380" font-size="11" fill="#555">Iterations:</text>
+  <rect x="72"  y="368" width="34" height="18" fill="white" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="89"  y="381" font-size="11" fill="#222" text-anchor="middle">3</text>
+  <text x="114" y="380" font-size="11" fill="#555">Model:</text>
+  <rect x="152" y="368" width="108" height="18" fill="white" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="206" y="381" font-size="11" fill="#222" text-anchor="middle">gpt-5-mini</text>
+
+  <!-- Run Refinement button — fill animates on "click" (t=13–14 s) -->
+  <rect x="8" y="392" width="120" height="24" rx="3" stroke="#005a9e" stroke-width="1">
+    <animate attributeName="fill"
+             values="#0078d4;#0078d4;#0078d4;#005a9e;#005a9e;#0078d4;#0078d4;#0078d4"
+             keyTimes="0;0.4;0.43;0.46;0.5;0.53;0.6;1"
+             dur="30s" repeatCount="indefinite"/>
+  </rect>
+  <text x="68" y="409" font-size="11" fill="white" font-weight="bold" text-anchor="middle">Run Refinement</text>
+
+  <!-- Copy Final Prompt button — highlights at t=25–27 s -->
+  <rect x="136" y="392" width="114" height="24" rx="3" stroke="#aaa" stroke-width="1">
+    <animate attributeName="fill"
+             values="#e1e1e1;#e1e1e1;#e1e1e1;#0078d4;#0078d4;#e1e1e1;#e1e1e1"
+             keyTimes="0;0.8;0.833;0.867;0.9;0.933;1"
+             dur="30s" repeatCount="indefinite"/>
+  </rect>
+  <text x="193" y="409" font-size="11" text-anchor="middle">
+    <animate attributeName="fill"
+             values="#333;#333;#333;#fff;#fff;#333;#333"
+             keyTimes="0;0.8;0.833;0.867;0.9;0.933;1"
+             dur="30s" repeatCount="indefinite"/>
+    Copy Final Prompt
+  </text>
+
+  <!-- Accept Current Draft button -->
+  <rect x="258" y="392" width="122" height="24" rx="3" fill="#e1e1e1" stroke="#aaa" stroke-width="1"/>
+  <text x="319" y="409" font-size="11" fill="#999" text-anchor="middle">Accept Current Draft</text>
+
+  <!-- Preset / session buttons -->
+  <rect x="8"   y="422" width="82" height="20" rx="2" fill="#ebebeb" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="49"  y="437" font-size="10" fill="#444" text-anchor="middle">Save Preset</text>
+  <rect x="96"  y="422" width="82" height="20" rx="2" fill="#ebebeb" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="137" y="437" font-size="10" fill="#444" text-anchor="middle">Load Preset</text>
+  <rect x="184" y="422" width="96" height="20" rx="2" fill="#ebebeb" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="232" y="437" font-size="10" fill="#444" text-anchor="middle">Clear Session Key</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- RIGHT PANEL — OUTPUT AREAS                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- Refined Prompt (final) GroupBox -->
+  <rect x="448" y="58"  width="424" height="188" fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="452" y="52"  width="138" height="14"  fill="#f0f0f0"/>
+  <text x="456" y="64"  font-size="11" fill="#333">Refined Prompt (final)</text>
+  <rect x="454" y="66"  width="412" height="174" fill="#f4f8ff"  stroke="#d5d5d5" stroke-width="1"/>
+
+  <!-- Iteration History GroupBox -->
+  <rect x="448" y="254" width="424" height="100" fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="452" y="248" width="110" height="14"  fill="#f0f0f0"/>
+  <text x="456" y="260" font-size="11" fill="#333">Iteration History</text>
+  <rect x="454" y="264" width="412" height="84"  fill="#fafafa"  stroke="#d5d5d5" stroke-width="1"/>
+
+  <!-- Task Output GroupBox -->
+  <rect x="448" y="362" width="424" height="88"  fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="452" y="356" width="162" height="14"  fill="#f0f0f0"/>
+  <text x="456" y="368" font-size="11" fill="#333">Task Output (Answer mode)</text>
+  <!-- Copy Task Output button -->
+  <rect x="454" y="372" width="112" height="18" rx="2" fill="#ebebeb" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="510" y="385" font-size="10" fill="#444" text-anchor="middle">Copy Task Output</text>
+  <rect x="454" y="394" width="412" height="50" fill="#fafafa" stroke="#d5d5d5" stroke-width="1"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- ACTIVITY LOG                                                        -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <rect x="8"   y="458" width="864" height="44" fill="white"  stroke="#c0c0c0" stroke-width="1" rx="2"/>
+  <rect x="12"  y="452" width="76"  height="14" fill="#f0f0f0"/>
+  <text x="16"  y="464" font-size="11" fill="#333">Activity Log</text>
+  <!-- Clear Log button -->
+  <rect x="14"  y="466" width="64"  height="16" rx="2" fill="#ebebeb" stroke="#c0c0c0" stroke-width="1"/>
+  <text x="46"  y="479" font-size="10" fill="#444" text-anchor="middle">Clear Log</text>
+  <!-- Log textarea (2 lines) -->
+  <rect x="82"  y="466" width="784" height="30" fill="#fafafa" stroke="#d5d5d5" stroke-width="1"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STATUS BAR                                                          -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <rect x="0"   y="504" width="880" height="22" fill="#f2f2f2" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="8"   y="519" font-size="10" fill="#666">Ready.</text>
+  <line x1="58" y1="505" x2="58" y2="525"  stroke="#d5d5d5" stroke-width="1"/>
+  <text x="64"  y="519" font-size="10" fill="#555">Provider: OpenAI | gpt-5-mini | key: configured</text>
+  <line x1="312" y1="505" x2="312" y2="525" stroke="#d5d5d5" stroke-width="1"/>
+  <!-- log-to-file checkbox (decorative) -->
+  <rect x="318" y="510" width="10" height="10" fill="white" stroke="#999" stroke-width="1"/>
+  <text x="332" y="519" font-size="10" fill="#666">Log to file</text>
+  <!-- Token/cost — static baseline (covered by animated layer below) -->
+  <text x="872" y="519" font-size="10" fill="#888" text-anchor="end">Tokens: 0 | Cost: $0.0000</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- ANIMATED CONTENT LAYERS                                             -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- ─── Phase 1: Base prompt text fades in at t=2 s ─── -->
+  <g opacity="0">
+    <text x="18" y="81"  font-size="9.5" fill="#1a1a1a">Write a PowerShell script to monitor Windows services. If any service</text>
+    <text x="18" y="94"  font-size="9.5" fill="#1a1a1a">in a defined list is stopped, restart it automatically and email me</text>
+    <text x="18" y="107" font-size="9.5" fill="#1a1a1a">an alert. Log all restarts.</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.067;0.1;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 2a: Goals text at t=7 s ─── -->
+  <g opacity="0">
+    <text x="18" y="198" font-size="9.5" fill="#1a1a1a">- Production-ready, structured error handling</text>
+    <text x="18" y="211" font-size="9.5" fill="#1a1a1a">- Comment blocks for each logical section</text>
+    <text x="18" y="224" font-size="9.5" fill="#1a1a1a">- Built-in cmdlets only; no external modules</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.233;0.267;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 2b: Context text at t=9 s ─── -->
+  <g opacity="0">
+    <text x="18" y="284" font-size="9.5" fill="#1a1a1a">Windows Server 2019, PowerShell 5.1</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.3;0.333;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 3: "Running..." in status bar (t=14–22 s) ─── -->
+  <g opacity="0">
+    <rect x="314" y="506" width="80" height="18" fill="#f2f2f2"/>
+    <text x="320" y="519" font-size="10" font-weight="bold" fill="#d47000">Running...</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.467;0.5;0.733;0.767;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 4: Refined output line 1 — Role (t=15 s) ─── -->
+  <g opacity="0">
+    <text x="458" y="82" font-size="9" font-weight="bold" fill="#003070">Role:</text>
+    <text x="487" y="82" font-size="9" fill="#1a1a1a">You are a senior Windows systems engineer.</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.5;0.533;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 4: Refined output line 2 — Task (t=16.5 s) ─── -->
+  <g opacity="0">
+    <text x="458" y="97"  font-size="9" font-weight="bold" fill="#003070">Task:</text>
+    <text x="487" y="97"  font-size="9" fill="#1a1a1a">Write a production-ready PowerShell 5.1 script that monitors</text>
+    <text x="458" y="109" font-size="9" fill="#1a1a1a">and auto-heals Windows services on Windows Server 2019.</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.55;0.583;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 4: Refined output — Requirements (t=18 s) ─── -->
+  <g opacity="0">
+    <text x="458" y="125" font-size="9" font-weight="bold" fill="#003070">Requirements:</text>
+    <text x="458" y="138" font-size="9" fill="#1a1a1a">• Check each service against a configurable list variable</text>
+    <text x="458" y="151" font-size="9" fill="#1a1a1a">• Restart stopped services; log each event to the Windows Event Log</text>
+    <text x="458" y="164" font-size="9" fill="#1a1a1a">• Send an email alert via Send-MailMessage on each auto-restart</text>
+    <text x="458" y="177" font-size="9" fill="#1a1a1a">• Include structured comment blocks per section; no external modules</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.6;0.633;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 4: Refined output — Constraints (t=19.5 s) ─── -->
+  <g opacity="0">
+    <text x="458" y="193" font-size="9" font-weight="bold" fill="#003070">Constraints:</text>
+    <text x="458" y="206" font-size="9" fill="#1a1a1a">• Target PowerShell 5.1 on Windows Server 2019; no cross-platform code</text>
+    <text x="458" y="219" font-size="9" fill="#1a1a1a">• Exit with code 1 if any service restart fails; code 0 on clean run</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.65;0.683;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 4: Iteration History (t=21 s) ─── -->
+  <g opacity="0">
+    <text x="458" y="280" font-size="9" fill="#444" class="code">[1/3]  Clarified role; expanded scope and primary deliverable</text>
+    <text x="458" y="294" font-size="9" fill="#444" class="code">[2/3]  Structured requirements with bullet-point constraints</text>
+    <text x="458" y="308" font-size="9" fill="#444" class="code">[3/3]  Added exit-code contract; tightened PS 5.1 constraint</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.7;0.733;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 4: Activity Log entries (t=15 s) ─── -->
+  <g opacity="0">
+    <text x="86"  y="478" font-size="9" fill="#555" class="code">[12:04:01] Starting refinement (3 iter, gpt-5-mini, OpenAI)</text>
+    <text x="86"  y="489" font-size="9" fill="#555" class="code">[12:04:13] 1/3 done   2/3 done   3/3 done — refinement complete</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.5;0.533;0.933;0.967;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ─── Phase 5: Token count update (t=22 s, stays visible) ─── -->
+  <g opacity="0">
+    <rect x="614" y="506" width="260" height="18" fill="#f2f2f2"/>
+    <text x="872" y="519" font-size="10" fill="#333" text-anchor="end">Tokens: 1,842 | Cost: $0.0003</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;1;1"
+             keyTimes="0;0.733;0.767;0.967;1;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- CAPTION STRIP (y=524–556, outside the app window border)           -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- Dark background — fades in at t=1.5 s, persists to loop end -->
+  <rect x="0" y="524" width="880" height="32" fill="#001a3a">
+    <animate attributeName="opacity"
+             values="0;0;1;1;1;1"
+             keyTimes="0;0.05;0.083;0.967;1;1"
+             dur="30s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- Caption 1 (t=1.5–6 s) -->
+  <g opacity="0">
+    <text x="440" y="537" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">① Enter a rough prompt — no special format required</text>
+    <text x="440" y="551" font-size="10" fill="#99bbdd" text-anchor="middle">Base Prompt · Refinement Goals · Project Context</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.05;0.083;0.183;0.217;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- Caption 2 (t=6–12 s) -->
+  <g opacity="0">
+    <text x="440" y="537" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">② Guide the refinement with goals and context</text>
+    <text x="440" y="551" font-size="10" fill="#99bbdd" text-anchor="middle">constraints · coding style · target environment · tone</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.2;0.233;0.383;0.417;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- Caption 3 (t=12–16 s) -->
+  <g opacity="0">
+    <text x="440" y="537" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">③ Click Run Refinement — AI iterates N times to structure the prompt</text>
+    <text x="440" y="551" font-size="10" fill="#99bbdd" text-anchor="middle">each pass sharpens role · requirements · constraints</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.4;0.433;0.5;0.533;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- Caption 4 (t=16–24 s) -->
+  <g opacity="0">
+    <text x="440" y="537" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">④ Structured prompt ready — Role · Task · Requirements · Constraints</text>
+    <text x="440" y="551" font-size="10" fill="#99bbdd" text-anchor="middle">iteration history and live token cost shown as it runs</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;0;0"
+             keyTimes="0;0.533;0.567;0.783;0.817;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- Caption 5 (t=24–30 s) -->
+  <g opacity="0">
+    <text x="440" y="537" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">⑤ Copy it · save as a preset · or send directly via Answer mode</text>
+    <text x="440" y="551" font-size="10" fill="#99bbdd" text-anchor="middle">Prompt Pilot — lightweight prompt engineering for engineers on Windows</text>
+    <animate attributeName="opacity"
+             values="0;0;1;1;1;1"
+             keyTimes="0;0.8;0.833;0.967;1;1"
+             dur="30s" repeatCount="indefinite"/>
+  </g>
+
+</svg>
