@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Prompt Pilot — Interactive Demo</title>
+  <style>
+    /* ─── Reset & base ─── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 40px;
+    }
+
+    /* ─── Page header ─── */
+    .page-header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .page-header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: -0.5px;
+    }
+    .page-header p {
+      font-size: 0.95rem;
+      color: #99aacc;
+      margin-top: 6px;
+    }
+
+    /* ─── Step progress bar ─── */
+    .progress-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      align-items: center;
+    }
+    .step-dot {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid #3a5a8a;
+      background: transparent;
+      color: #6688aa;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .step-dot.active {
+      background: #0078d4;
+      border-color: #0078d4;
+      color: #fff;
+      box-shadow: 0 0 0 4px rgba(0,120,212,0.25);
+    }
+    .step-dot.done {
+      background: #1e5fa0;
+      border-color: #1e5fa0;
+      color: #cce;
+    }
+    .step-connector {
+      flex: 1;
+      height: 2px;
+      background: #3a5a8a;
+      max-width: 60px;
+    }
+
+    /* ─── App window container ─── */
+    .window-wrap {
+      width: 100%;
+      max-width: 960px;
+    }
+
+    /* ─── Windows-style app window ─── */
+    .app-window {
+      background: #f0f0f0;
+      border: 1px solid #a0a0a0;
+      border-radius: 4px 4px 0 0;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+
+    /* Title bar */
+    .title-bar {
+      background: #0078d4;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 8px;
+    }
+    .title-bar-title { color: #fff; font-size: 13px; font-weight: 600; flex: 1; }
+    .window-btn {
+      width: 14px; height: 14px; border-radius: 50%;
+      border: none; cursor: pointer;
+    }
+    .btn-close    { background: #e74c3c; margin-left: auto; }
+    .btn-minimise { background: #f1c40f; }
+    .btn-maximise { background: #2ecc71; }
+
+    /* Menu bar */
+    .menu-bar {
+      background: #f5f5f5;
+      border-bottom: 1px solid #d8d8d8;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: #333;
+      display: flex;
+      gap: 20px;
+    }
+    .menu-bar span { cursor: pointer; }
+    .menu-bar span:hover { text-decoration: underline; }
+
+    /* App header */
+    .app-header {
+      padding: 8px 10px 6px;
+      border-bottom: 1px solid #d0d0d0;
+    }
+    .app-header h1 { font-size: 20px; font-weight: 700; color: #1a1a1a; }
+
+    /* Main grid */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+    }
+    .left-panel, .right-panel {
+      padding: 8px;
+    }
+    .left-panel { border-right: 1px solid #ddd; }
+
+    /* GroupBox */
+    .group-box {
+      border: 1px solid #c0c0c0;
+      border-radius: 2px;
+      margin-bottom: 8px;
+      background: #fff;
+      position: relative;
+    }
+    .group-box legend {
+      font-size: 11px;
+      color: #333;
+      padding: 0 4px;
+      margin-left: 6px;
+    }
+    .group-box fieldset {
+      border: none;
+      padding: 4px 6px 6px;
+    }
+    .text-area {
+      width: 100%;
+      background: #fafafa;
+      border: 1px solid #d5d5d5;
+      border-radius: 1px;
+      font-size: 9.5px;
+      font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+      color: #1a1a1a;
+      padding: 4px 6px;
+      resize: none;
+      min-height: 70px;
+      line-height: 1.5;
+    }
+    .text-area.output {
+      background: #f4f8ff;
+      color: #003070;
+      min-height: 130px;
+      font-size: 9px;
+      line-height: 1.6;
+    }
+    .text-area.history { min-height: 70px; }
+    .text-area.task-out { min-height: 50px; }
+    .text-area.log-area {
+      font-family: Consolas, 'Courier New', monospace;
+      min-height: 30px;
+      font-size: 9px;
+      color: #555;
+    }
+
+    /* Mode row */
+    .mode-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 0;
+      font-size: 11px;
+    }
+    .mode-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; color: #333; }
+
+    /* Iter/Model row */
+    .iter-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: #555;
+      padding: 4px 0 6px;
+    }
+    .iter-row input {
+      width: 34px;
+      font-size: 11px;
+      border: 1px solid #c0c0c0;
+      padding: 1px 4px;
+      text-align: center;
+    }
+    .iter-row .model-input {
+      width: 110px;
+      font-size: 11px;
+      border: 1px solid #c0c0c0;
+      padding: 1px 4px;
+    }
+
+    /* Buttons */
+    .btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+    .btn {
+      padding: 4px 12px;
+      font-size: 11px;
+      font-family: inherit;
+      border: 1px solid #aaa;
+      border-radius: 3px;
+      background: #e1e1e1;
+      color: #333;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: #d0d0d0; }
+    .btn.primary {
+      background: #0078d4;
+      border-color: #005a9e;
+      color: #fff;
+      font-weight: 600;
+    }
+    .btn.primary:hover { background: #106ebe; }
+    .btn.highlight-anim {
+      background: #0078d4 !important;
+      color: #fff !important;
+      border-color: #005a9e !important;
+    }
+    .btn.dimmed { color: #aaa; }
+
+    /* Status bar */
+    .status-bar {
+      background: #f2f2f2;
+      border-top: 1px solid #d0d0d0;
+      display: flex;
+      align-items: center;
+      font-size: 10px;
+      color: #666;
+      padding: 3px 8px;
+      gap: 0;
+    }
+    .status-sep {
+      width: 1px; height: 16px;
+      background: #d5d5d5; margin: 0 8px;
+    }
+    .status-running { font-weight: 700; color: #d47000; }
+    .status-tokens { margin-left: auto; }
+
+    /* Log + status wrapper */
+    .bottom-area {
+      border-top: 1px solid #ddd;
+      padding: 4px 8px;
+    }
+    .log-label { font-size: 11px; color: #333; font-weight: 400; margin-bottom: 2px; }
+
+    /* ─── Step description panel ─── */
+    .step-panel {
+      background: #001a3a;
+      border-radius: 0 0 4px 4px;
+      padding: 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    .step-info { flex: 1; }
+    .step-number { font-size: 11px; font-weight: 600; color: #6699cc; text-transform: uppercase; letter-spacing: 0.8px; }
+    .step-title { font-size: 16px; font-weight: 700; color: #fff; margin: 3px 0; }
+    .step-desc  { font-size: 12px; color: #99bbdd; }
+    .step-controls { display: flex; gap: 8px; }
+    .nav-btn {
+      padding: 8px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      border: 1px solid #3a6aa0;
+      border-radius: 4px;
+      background: transparent;
+      color: #99ccff;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .nav-btn:hover { background: #0078d4; border-color: #0078d4; color: #fff; }
+    .nav-btn.next-btn { background: #0078d4; border-color: #0078d4; color: #fff; }
+    .nav-btn.next-btn:hover { background: #106ebe; }
+    .nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* Highlight pulsing for annotated elements */
+    @keyframes highlightPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(0,120,212,0.6); }
+      50% { box-shadow: 0 0 0 6px rgba(0,120,212,0.0); }
+    }
+    .annotate { animation: highlightPulse 1.5s ease-in-out infinite; }
+
+    /* Fade transition for text area content */
+    .fade-in { animation: fadeIn 0.5s ease-in; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Typing animation */
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .cursor { display: inline-block; animation: blink 1s step-end infinite; }
+
+    /* Responsive */
+    @media (max-width: 700px) {
+      .main-grid { grid-template-columns: 1fr; }
+      .left-panel { border-right: none; border-bottom: 1px solid #ddd; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page-header">
+    <h1>⚡ Prompt Pilot</h1>
+    <p>Interactive demo — watch a rough idea become a structured AI prompt in five steps</p>
+  </div>
+
+  <!-- Step progress -->
+  <div class="progress-bar" id="progressBar">
+    <div class="step-dot active" onclick="goStep(0)">1</div>
+    <div class="step-connector"></div>
+    <div class="step-dot" onclick="goStep(1)">2</div>
+    <div class="step-connector"></div>
+    <div class="step-dot" onclick="goStep(2)">3</div>
+    <div class="step-connector"></div>
+    <div class="step-dot" onclick="goStep(3)">4</div>
+    <div class="step-connector"></div>
+    <div class="step-dot" onclick="goStep(4)">5</div>
+  </div>
+
+  <div class="window-wrap">
+    <!-- Windows-style chrome -->
+    <div class="app-window">
+      <div class="title-bar">
+        <span class="title-bar-title">Prompt Pilot</span>
+        <button class="window-btn btn-minimise" title="Minimise"></button>
+        <button class="window-btn btn-maximise" title="Maximise"></button>
+        <button class="window-btn btn-close"    title="Close"></button>
+      </div>
+      <div class="menu-bar">
+        <span>_Settings</span>
+        <span>_Help</span>
+      </div>
+      <div class="app-header"><h1>Prompt Pilot</h1></div>
+
+      <!-- Main grid -->
+      <div class="main-grid">
+        <!-- LEFT: inputs -->
+        <div class="left-panel">
+          <!-- Base Prompt -->
+          <fieldset class="group-box">
+            <legend>Base Prompt</legend>
+            <textarea id="promptBox" class="text-area" rows="5" readonly
+              placeholder="Your rough idea goes here…"></textarea>
+          </fieldset>
+
+          <!-- Refinement Goals -->
+          <fieldset class="group-box">
+            <legend>Refinement Goals</legend>
+            <textarea id="goalsBox" class="text-area" rows="3" readonly
+              placeholder="Optional: guide the AI's refinement…"></textarea>
+          </fieldset>
+
+          <!-- Project Context -->
+          <fieldset class="group-box">
+            <legend>Project Context (optional)</legend>
+            <textarea id="contextBox" class="text-area" rows="2" readonly
+              placeholder="e.g. Python 3.12, internal REST API, no third-party libs"></textarea>
+          </fieldset>
+
+          <!-- Mode -->
+          <fieldset class="group-box">
+            <legend>Mode</legend>
+            <div class="mode-row">
+              <label><input type="radio" name="mode" id="modeRefine" checked/> Refine Prompt</label>
+              <label><input type="radio" name="mode" id="modeAnswer"/>          Answer Task</label>
+            </div>
+          </fieldset>
+
+          <!-- Iter / Model -->
+          <div class="iter-row">
+            <span>Iterations:</span>
+            <input id="iterInput" type="text" value="3" readonly/>
+            <span>Model:</span>
+            <input id="modelInput" class="model-input" type="text" value="gpt-5-mini" readonly/>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="btn-row">
+            <button class="btn primary" id="btnRun">Run Refinement</button>
+            <button class="btn"         id="btnCopy">Copy Final Prompt</button>
+            <button class="btn dimmed"  id="btnAccept">Accept Current Draft</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn">Save Preset</button>
+            <button class="btn">Load Preset</button>
+            <button class="btn">Clear Session Key</button>
+          </div>
+        </div>
+
+        <!-- RIGHT: outputs -->
+        <div class="right-panel">
+          <!-- Refined Prompt -->
+          <fieldset class="group-box">
+            <legend>Refined Prompt (final)</legend>
+            <textarea id="outputBox" class="text-area output" rows="9" readonly
+              placeholder="The structured prompt appears here after refinement…"></textarea>
+          </fieldset>
+
+          <!-- Iteration History -->
+          <fieldset class="group-box">
+            <legend>Iteration History</legend>
+            <textarea id="historyBox" class="text-area history" rows="4" readonly
+              placeholder="Per-iteration summaries shown here…"></textarea>
+          </fieldset>
+
+          <!-- Task Output -->
+          <fieldset class="group-box">
+            <legend>Task Output (Answer mode)</legend>
+            <textarea id="taskBox" class="text-area task-out" rows="3" readonly
+              placeholder="Answer mode response appears here…"></textarea>
+          </fieldset>
+        </div>
+      </div>
+
+      <!-- Log -->
+      <div class="bottom-area">
+        <div class="log-label">Activity Log</div>
+        <textarea id="logBox" class="text-area log-area" rows="2" readonly></textarea>
+      </div>
+
+      <!-- Status bar -->
+      <div class="status-bar">
+        <span id="statusReady">Ready.</span>
+        <div class="status-sep"></div>
+        <span id="statusProvider">Provider: OpenAI | gpt-5-mini | key: configured</span>
+        <div class="status-sep"></div>
+        <span class="status-running" id="statusRunning" style="display:none">Running…</span>
+        <span class="status-tokens" id="statusTokens">Tokens: 0 | Cost: $0.0000</span>
+      </div>
+    </div>
+
+    <!-- Step description + navigation -->
+    <div class="step-panel">
+      <div class="step-info">
+        <div class="step-number" id="stepNumber">Step 1 of 5</div>
+        <div class="step-title"  id="stepTitle">Enter a rough prompt</div>
+        <div class="step-desc"   id="stepDesc">Type your vague idea into the Base Prompt box — no special format needed.</div>
+      </div>
+      <div class="step-controls">
+        <button class="nav-btn" id="btnPrev" onclick="prevStep()" disabled>← Back</button>
+        <button class="nav-btn next-btn" id="btnNext" onclick="nextStep()">Next →</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ─── Step definitions ───────────────────────────────────────────────────
+    const STEPS = [
+      {
+        number: 'Step 1 of 5',
+        title: 'Enter a rough prompt',
+        desc: 'Type your vague idea into the Base Prompt box — no special format needed.',
+        action: step1
+      },
+      {
+        number: 'Step 2 of 5',
+        title: 'Add goals and project context',
+        desc: 'Guide the AI: coding style, constraints, target environment, output format.',
+        action: step2
+      },
+      {
+        number: 'Step 3 of 5',
+        title: 'Click Run Refinement',
+        desc: 'The AI iterates N times, each pass sharpening role, requirements, and constraints.',
+        action: step3
+      },
+      {
+        number: 'Step 4 of 5',
+        title: 'Structured prompt ready',
+        desc: 'Role · Task · Requirements · Constraints — iteration history and token cost shown live.',
+        action: step4
+      },
+      {
+        number: 'Step 5 of 5',
+        title: 'Copy · preset · or Answer mode',
+        desc: 'Copy the refined prompt, save it as a reusable preset, or send it straight to Answer mode.',
+        action: step5
+      }
+    ];
+
+    const ROUGH_PROMPT =
+`Write a PowerShell script to monitor Windows services.
+If any service in a defined list is stopped, restart it
+automatically and email me an alert. Log all restarts.`;
+
+    const GOALS =
+`- Production-ready, structured error handling
+- Comment blocks for each logical section
+- Built-in cmdlets only; no external modules`;
+
+    const CONTEXT = `Windows Server 2019, PowerShell 5.1`;
+
+    const REFINED_OUTPUT =
+`Role: You are a senior Windows systems engineer.
+
+Task: Write a production-ready PowerShell 5.1 script that monitors
+and auto-heals Windows services on Windows Server 2019.
+
+Requirements:
+• Check each service against a configurable list variable
+• Restart stopped services; log each event to the Windows Event Log
+• Send an email alert via Send-MailMessage on each auto-restart
+• Include structured comment blocks per section; no external modules
+
+Constraints:
+• Target PowerShell 5.1 on Windows Server 2019 only
+• Exit with code 1 if any service restart fails; code 0 on clean run`;
+
+    const HISTORY =
+`[1/3]  Clarified role; expanded scope and primary deliverable
+[2/3]  Structured requirements with bullet-point constraints
+[3/3]  Added exit-code contract; tightened PS 5.1 constraint`;
+
+    const LOG_RUNNING =
+`[12:04:01] Starting refinement run (3 iterations, gpt-5-mini, OpenAI)…
+[12:04:05] Iteration 1/3 complete.  [12:04:09] 2/3 done.  [12:04:13] 3/3 — refinement complete.`;
+
+    // ─── State ───────────────────────────────────────────────────────────────
+    let currentStep = 0;
+
+    // ─── UI helpers ──────────────────────────────────────────────────────────
+    function setText(id, val) {
+      const el = document.getElementById(id);
+      el.value = val;
+      el.classList.remove('fade-in');
+      void el.offsetWidth; // reflow
+      el.classList.add('fade-in');
+    }
+    function clearText(id) { document.getElementById(id).value = ''; }
+    function show(id)  { document.getElementById(id).style.display = ''; }
+    function hide(id)  { document.getElementById(id).style.display = 'none'; }
+    function setInner(id, html) { document.getElementById(id).innerHTML = html; }
+
+    function updateProgress() {
+      const dots = document.querySelectorAll('.step-dot');
+      dots.forEach((d, i) => {
+        d.classList.remove('active', 'done');
+        if (i < currentStep) d.classList.add('done');
+        else if (i === currentStep) d.classList.add('active');
+      });
+      setInner('stepNumber', STEPS[currentStep].number);
+      setInner('stepTitle',  STEPS[currentStep].title);
+      setInner('stepDesc',   STEPS[currentStep].desc);
+      document.getElementById('btnPrev').disabled = currentStep === 0;
+      const nextBtn = document.getElementById('btnNext');
+      if (currentStep === STEPS.length - 1) {
+        nextBtn.textContent = '↺ Restart';
+        nextBtn.onclick = () => { currentStep = -1; nextStep(); };
+      } else {
+        nextBtn.textContent = 'Next →';
+        nextBtn.onclick = nextStep;
+      }
+    }
+
+    // ─── Step actions ─────────────────────────────────────────────────────────
+    function resetAll() {
+      clearText('promptBox');
+      clearText('goalsBox');
+      clearText('contextBox');
+      clearText('outputBox');
+      clearText('historyBox');
+      clearText('taskBox');
+      clearText('logBox');
+      document.getElementById('statusRunning').style.display = 'none';
+      document.getElementById('statusReady').textContent = 'Ready.';
+      document.getElementById('statusTokens').textContent = 'Tokens: 0 | Cost: $0.0000';
+      document.getElementById('btnRun').classList.remove('annotate');
+      document.getElementById('btnCopy').classList.remove('highlight-anim', 'annotate');
+      document.getElementById('btnAccept').classList.remove('annotate');
+    }
+
+    function step1() {
+      resetAll();
+      setText('promptBox', ROUGH_PROMPT);
+    }
+
+    function step2() {
+      setText('promptBox', ROUGH_PROMPT);
+      setText('goalsBox',   GOALS);
+      setText('contextBox', CONTEXT);
+    }
+
+    function step3() {
+      setText('promptBox',  ROUGH_PROMPT);
+      setText('goalsBox',   GOALS);
+      setText('contextBox', CONTEXT);
+      document.getElementById('btnRun').classList.add('annotate');
+      // Simulate "click" → "running" transition after 800 ms
+      setTimeout(() => {
+        document.getElementById('btnRun').classList.remove('annotate');
+        document.getElementById('statusReady').textContent = '';
+        show('statusRunning');
+        setText('logBox', '[12:04:01] Starting refinement run (3 iterations, gpt-5-mini, OpenAI)…');
+      }, 800);
+    }
+
+    function step4() {
+      setText('promptBox',  ROUGH_PROMPT);
+      setText('goalsBox',   GOALS);
+      setText('contextBox', CONTEXT);
+      document.getElementById('statusReady').textContent = 'Refinement complete.';
+      hide('statusRunning');
+      setText('outputBox',  REFINED_OUTPUT);
+      setText('historyBox', HISTORY);
+      setText('logBox',     LOG_RUNNING);
+      document.getElementById('statusTokens').textContent = 'Tokens: 1,842 | Cost: $0.0003';
+    }
+
+    function step5() {
+      step4();
+      // Highlight Copy button
+      const copyBtn = document.getElementById('btnCopy');
+      copyBtn.classList.add('highlight-anim', 'annotate');
+      setTimeout(() => {
+        copyBtn.classList.remove('annotate');
+        // Simulate copy confirmation
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = '✓ Copied!';
+        setTimeout(() => { copyBtn.textContent = orig; }, 1800);
+      }, 900);
+    }
+
+    // ─── Navigation ──────────────────────────────────────────────────────────
+    function nextStep() {
+      if (currentStep < STEPS.length - 1) currentStep++;
+      updateProgress();
+      STEPS[currentStep].action();
+    }
+    function prevStep() {
+      if (currentStep > 0) currentStep--;
+      updateProgress();
+      STEPS[currentStep].action();
+    }
+    function goStep(i) {
+      currentStep = i;
+      updateProgress();
+      STEPS[currentStep].action();
+    }
+
+    // ─── Auto-play (advances every 6 s) ──────────────────────────────────────
+    let autoTimer = setInterval(() => {
+      if (currentStep < STEPS.length - 1) nextStep();
+      else { goStep(0); }
+    }, 6000);
+
+    // Stop auto-play when user interacts manually
+    document.querySelectorAll('.nav-btn, .step-dot').forEach(el => {
+      el.addEventListener('click', () => { clearInterval(autoTimer); autoTimer = null; });
+    });
+
+    // ─── Init ─────────────────────────────────────────────────────────────────
+    updateProgress();
+    STEPS[0].action();
+  </script>
+</body>
+</html>

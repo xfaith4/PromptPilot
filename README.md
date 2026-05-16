@@ -9,6 +9,10 @@
 
 Prompt Pilot is a Windows desktop app for turning rough AI prompts into structured task briefs, then optionally running those prompts against a supported model provider from the same UI.
 
+![Prompt Pilot animated demo](docs/demo/demo.svg)
+
+> 30-second looping demo · [interactive HTML walkthrough](docs/demo/demo.html) · [step-by-step workflow guide](docs/demo/workflow.md)
+
 ![Prompt Pilot screenshot](docs/example-session.png)
 
 ## Why this repo exists
@@ -142,7 +146,13 @@ PromptPilot/
 ├─ Prompt_Pilot.Wpf.ps1          # Main WPF application entrypoint and logic
 ├─ Prompt_Pilot.MainWindow.xaml  # Main window layout
 ├─ assets/                       # App icon and branding assets
-├─ docs/                         # Documentation assets such as screenshots
+├─ docs/
+│  ├─ example-session.png        # Static screenshot
+│  └─ demo/
+│     ├─ demo.svg                # Animated workflow demo (embedded in README)
+│     ├─ demo.html               # Interactive HTML walkthrough (open locally)
+│     ├─ workflow.md             # Step-by-step workflow guide
+│     └─ README.md              # Demo assets index
 ├─ legacy/                       # Older console-based scripts kept for reference
 └─ tools/
    ├─ Build-PortableExe.ps1      # Portable packaging script
