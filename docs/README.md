@@ -26,7 +26,7 @@ The demo walks through the five core workflow steps:
 The animated SVG can be embedded anywhere Markdown renders images:
 
 ```markdown
-![Prompt Pilot demo](docs/demo/demo.svg)
+![Prompt Pilot demo](docs/demo.svg)
 ```
 
 It loops automatically and requires no JavaScript or network access.
@@ -35,10 +35,10 @@ It loops automatically and requires no JavaScript or network access.
 
 ```powershell
 # Windows — open directly in the default browser
-Start-Process docs\demo\demo.html
+Start-Process docs\demo.html
 
 # macOS / Linux
-open docs/demo/demo.html
+open docs/demo.html
 ```
 
 The HTML file is fully self-contained (no CDN dependencies) and works offline.
