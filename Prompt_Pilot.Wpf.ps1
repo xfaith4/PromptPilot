@@ -985,6 +985,23 @@ function Invoke-OpenAIAnswer {
     }
 }
 
+function Show-TaskErrorDialog {
+    <#
+    .SYNOPSIS
+        Modal error dialog for a failed background task. Kept as its own
+        function so headless tests can override it instead of blocking on a
+        real MessageBox.
+    #>
+    param([string]$Message)
+
+    [System.Windows.MessageBox]::Show(
+        "Failed to run task: $Message",
+        "Error",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Error
+    ) | Out-Null
+}
+
 function Complete-AnswerTask {
     param(
         [Parameter(Mandatory)][System.IAsyncResult]$Handle,
@@ -997,7 +1014,7 @@ function Complete-AnswerTask {
             throw "No response object returned for task execution."
         }
 
-        $taskResult = $result[0]
+        $taskResult = $result[$result.Count - 1]
         $script:TaskOutputTextBox.Text = [string]$taskResult.OutputText
 
         if ($taskResult.Warnings) {
@@ -1012,24 +1029,46 @@ function Complete-AnswerTask {
         Append-Log -Message ("Task complete. {0}" -f $usageText)
     }
     catch {
-        $message = $_.Exception.Message
-        if ($PowerShellInstance.Streams.Error.Count -gt 0) {
-            $message = [string]$PowerShellInstance.Streams.Error[0]
+        # [12] A stopped pipeline is the operator's Cancel, not an application
+        # error — report it as such and skip the error dialog.
+        if ($PowerShellInstance.InvocationStateInfo.State -eq 'Stopped') {
+            Show-Status -Message "Task cancelled."
+            Append-Log  -Message "Task cancelled by operator."
         }
+        else {
+            $message = $_.Exception.Message
+            if ($PowerShellInstance.Streams.Error.Count -gt 0) {
+                $message = [string]$PowerShellInstance.Streams.Error[0]
+            }
 
-        Append-Log -Message ("Task failed: {0}" -f $message)
-        Show-Status -Message ("Task failed: {0}" -f $message)
-        [System.Windows.MessageBox]::Show(
-            "Failed to run task: $message",
-            "Error",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Error
-        ) | Out-Null
+            Append-Log -Message ("Task failed: {0}" -f $message)
+            Show-Status -Message ("Task failed: {0}" -f $message)
+            Show-TaskErrorDialog -Message $message
+        }
     }
     finally {
         Set-BusyState -IsBusy $false
         $PowerShellInstance.Dispose()
         $script:AnswerTaskState = $null
+    }
+}
+
+function Stop-AnswerTask {
+    <#
+    .SYNOPSIS
+        Requests cancellation of the running background answer task. Safe to
+        call when no task is running. UI cleanup happens in Complete-AnswerTask
+        when the poll timer observes the stopped pipeline.
+    #>
+    if (-not $script:AnswerTaskState) { return }
+
+    try {
+        $null = $script:AnswerTaskState.PowerShell.BeginStop($null, $null)
+        Show-Status -Message "Cancelling task..."
+        Append-Log  -Message "Cancel requested — stopping the background task."
+    }
+    catch {
+        Append-Log -Message ("Cancel request failed: {0}" -f $_.Exception.Message)
     }
 }
 
@@ -1421,7 +1460,9 @@ function Run-AnswerTask {
     try {
         $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
         Start-AnswerTask -Prompt $promptToRun -FilePath $file -Model $model -ProviderName $script:ActiveProvider -ApiKey $apiKey
-        if ($script:CancelButton)          { $script:CancelButton.IsEnabled = $false }
+        # [12] Cancel stays ENABLED: it is the only recovery from a slow or hung
+        # request short of killing the app. Accept-draft is refine-only, so it
+        # stays off while a background task runs.
         if ($script:AcceptIterationButton) { $script:AcceptIterationButton.IsEnabled = $false }
         Append-Log -Message "Task request is running in the background."
     }
@@ -1492,8 +1533,15 @@ $script:RunButton.Add_Click({
     }
 })
 
-# [3] Cancel — signals the refinement loop to stop after the current API call
+# [3] Cancel — refine mode: signals the loop to stop after the current call.
+# [12] Answer mode: stops the background pipeline; the poll timer then reports
+# the cancellation and restores the UI through Complete-AnswerTask.
 $script:CancelButton.Add_Click({
+    if ($script:AnswerTaskState) {
+        Stop-AnswerTask
+        return
+    }
+
     $script:CancelRequested = $true
     Append-Log -Message "Cancel requested — will stop after the current iteration completes."
 })
@@ -1994,5 +2042,12 @@ WHAT CHANGED
        Key values are never written to logs, clipboard, or UI text fields.
 - [10] PS version guard (>= 5.1) and Windows platform guard added at the very
        top of the script, before any assembly loads.
+- [11] Answer mode runs in a background PowerShell pipeline polled by a
+       DispatcherTimer, so the window stays responsive during the API call.
+- [12] Background tasks are cancellable: Cancel stays enabled during a run and
+       stops the background pipeline (Stop-AnswerTask); a stopped pipeline is
+       reported as "Task cancelled.", not as an error. The failure MessageBox
+       moved behind Show-TaskErrorDialog so headless tests can intercept it.
+       Tests live in tests/ (pwsh -STA -File tests/Invoke-Tests.ps1).
 ===============================================================================
 #>
