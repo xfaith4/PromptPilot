@@ -9,3 +9,6 @@ logs/
 # Local build/tooling output (not part of the product)
 .next/
 output/
+
+# Personal Claude Code overrides
+.claude/settings.local.json

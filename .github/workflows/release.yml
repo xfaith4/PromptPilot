@@ -1,0 +1,106 @@
+name: Publish release
+# Runs only when a version tag such as v1.0.0-rc.3 or v1.0.0 is pushed.
+# Ordinary pushes and pull requests stay on windows.yml, which produces a
+# reviewable candidate artifact but never publishes. Pushing the tag is the
+# explicit human decision that the acceptance gates in docs/RELEASE.md are met.
+on:
+  push:
+    tags:
+      - "v*"
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify tag matches data/product.json
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $version = (Get-Content -Raw data/product.json | ConvertFrom-Json).version
+          if ($tag -ne "v$version") {
+            throw "Tag '$tag' does not match data/product.json version '$version'. Bump the version or retag."
+          }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $pre = if ($version -match '-') { 'true' } else { 'false' }
+          "RELEASE_PRERELEASE=$pre" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Install pinned test and packaging tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module ps2exe -RequiredVersion 1.0.17 -Scope CurrentUser -Force
+      - name: Test native Windows workflows
+        run: .\tests\Invoke-Tests.ps1
+      - name: Build and smoke-test portable EXE
+        run: .\tools\Build-PortableExe.ps1 -SkipTests
+      - name: Write release notes from CHANGELOG.md
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_VERSION
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## $([regex]::Escape($version))\s*$" | Select-Object -First 1).LineNumber
+          if (-not $start) { throw "CHANGELOG.md has no '## $version' section." }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $start; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^## ') { break }
+            $body.Add($lines[$i])
+          }
+          $zip = Get-ChildItem dist -Filter "Prompt_Pilot-$version-win-x64.zip" | Select-Object -First 1
+          if (-not $zip) { throw "No dist/Prompt_Pilot-$version-win-x64.zip was produced." }
+          $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $notes = @(
+            "## Download"
+            ""
+            "Extract the ZIP anywhere and double-click **Start Prompt Pilot.cmd**. Requires Windows 10/11 with Windows PowerShell 5.1 or PowerShell 7 (WPF) and a provider API key."
+            ""
+            "This build is **not code-signed**. Windows SmartScreen may show ""Windows protected your PC"" on first launch. Verify the checksum, then choose **More info > Run anyway**."
+            ""
+            '```powershell'
+            "Get-FileHash .\$($zip.Name) -Algorithm SHA256"
+            '```'
+            ""
+            "Expected SHA-256: ``$hash``"
+            ""
+            "## Changes in $version"
+            ""
+          ) + $body + @(
+            ""
+            "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md), [ROADMAP.md](https://github.com/${{ github.repository }}/blob/main/ROADMAP.md) for open release gates, and the [validation record](https://github.com/${{ github.repository }}/blob/main/docs/VALIDATION.md)."
+          )
+          New-Item -ItemType Directory -Force build | Out-Null
+          Set-Content -Path build/release-notes.md -Value $notes -Encoding utf8
+          Get-Content build/release-notes.md
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_VERSION
+          $args = @(
+            'release', 'create', '${{ github.ref_name }}',
+            "dist/Prompt_Pilot-$version-win-x64.zip",
+            "dist/Prompt_Pilot-$version-win-x64.zip.sha256",
+            '--verify-tag',
+            '--title', "Prompt Pilot $version",
+            '--notes-file', 'build/release-notes.md'
+          )
+          if ($env:RELEASE_PRERELEASE -eq 'true') { $args += '--prerelease' }
+          gh @args
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: prompt-pilot-release-${{ github.ref_name }}-evidence
+          if-no-files-found: warn
+          path: |
+            build/package-smoke-*/smoke.json
+            build/package-smoke-*/smoke.png
+            build/release-notes.md
