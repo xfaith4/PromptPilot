@@ -1,15 +1,67 @@
 # Prompt Pilot
 
-A Windows desktop workspace for turning rough requests into clear coding-agent
-instructions, reviewing what changed, and optionally getting an answer from the
-same provider. Your original request remains available throughout the session.
+**Turn rough requests into clear coding-agent instructions.** A Windows desktop
+app with hard cost guardrails for OpenAI, Anthropic and GitHub Models.
 
-**Version 1.0.0-rc.2.** This is a release candidate. See [ROADMAP.md](ROADMAP.md)
-for verified work and the remaining external release gates.
-
-See [the validation record](docs/VALIDATION.md) for exact live and local proof.
+[![Windows product checks](https://github.com/xfaith4/PromptPilot/actions/workflows/windows.yml/badge.svg)](https://github.com/xfaith4/PromptPilot/actions/workflows/windows.yml)
+[![Latest release](https://img.shields.io/github/v/release/xfaith4/PromptPilot?include_prereleases&label=release)](https://github.com/xfaith4/PromptPilot/releases)
+[![License: MIT](https://img.shields.io/github/license/xfaith4/PromptPilot)](LICENSE)
+![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
+![PowerShell 5.1 or 7](https://img.shields.io/badge/PowerShell-5.1%20%7C%207-5391FE)
 
 ![Prompt Pilot desktop session](docs/example-session.png)
+
+Write what you want in plain words. Prompt Pilot refines it into a precise brief,
+shows you exactly what changed against your original request, and can run the
+finished prompt against the same provider for an answer. Everything stays on your
+machine. See the [live walkthrough](https://xfaith4.github.io/PromptPilot/).
+
+## Why Prompt Pilot
+
+- **Spend is capped before each request, not after.** Every run has a budget. The app
+  reserves an input-plus-output allowance on disk before dispatch and refuses to send
+  the next request when it would exceed the budget. Unknown model prices block a run
+  instead of guessing.
+- **Your original request is never lost.** It stays visible through every iteration,
+  and **Compare** shows additions and removals of each revision against it side by side.
+- **Keys are encrypted per Windows user.** Saved API keys use Windows DPAPI for the
+  current user; session-only keys are never written. Logs redact known keys.
+- **No telemetry, no accounts.** Sessions are local JSON documents under your AppData
+  folder, exported to Markdown on demand. Nothing leaves the machine except the provider
+  calls you trigger.
+- **Model recommendations are evidence-backed and never automatic.** Weekly discovery is
+  metadata-only. Paid comparisons are off by default, capped per comparison and per
+  month, and a new default takes effect only after you explicitly accept it.
+
+## Quick start
+
+1. **Get the app.** Download the latest ZIP and its `.sha256` file from
+   [Releases](https://github.com/xfaith4/PromptPilot/releases), verify the hash, and
+   extract the folder anywhere. Or clone this repository and run from source.
+
+   ```powershell
+   Get-FileHash .\Prompt_Pilot-1.0.0-rc.2-win-x64.zip -Algorithm SHA256
+   ```
+
+2. **Add an API key.** Double-click **Start Prompt Pilot.cmd**, open **Settings >
+   Providers and API keys**, choose a provider and model, and enter a key. You can store
+   it encrypted for your Windows user or keep it for this session only. Existing
+   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GITHUB_TOKEN` variables also work.
+3. **Refine.** Write your request, pick a profile, set a run budget, and click
+   **Refine prompt**. Review or edit the draft, compare it with your original, then copy
+   it or choose **Use prompt to answer**.
+
+Requirements: Windows 10/11, Windows PowerShell 5.1 or PowerShell 7 with WPF, and a
+provider API key. A provider API account is separate from a chat subscription.
+
+**Unsigned builds.** Release candidates are not yet code-signed, so Windows SmartScreen
+may show "Windows protected your PC" on first launch. Verify the SHA-256 checksum
+against the release notes, then choose **More info > Run anyway**. The build labels
+unsigned artifacts `NotSigned` and never presents them as trusted-publisher signed.
+
+**Version 1.0.0-rc.2.** This is a release candidate. See [ROADMAP.md](ROADMAP.md)
+for verified work and the remaining external release gates, and
+[the validation record](docs/VALIDATION.md) for exact live and local proof.
 
 ## Start
 
@@ -17,10 +69,6 @@ Double-click **Start Prompt Pilot.cmd**. The launcher opens the portable EXE whe
 present, otherwise runs the source with Windows PowerShell 5.1 in STA mode.
 Running it again asks the existing instance to save and close before restarting;
 it does not force-kill your session. Close an open modal dialog if restart waits.
-
-Requirements: Windows 10/11, Windows PowerShell 5.1 or PowerShell 7 with WPF,
-and a provider API key. A provider API account is separate from a chat subscription.
-Building an EXE additionally requires the pinned `ps2exe` version below.
 
 Manual source launch:
 
@@ -99,22 +147,8 @@ An API or parameter change can require an application update. New model names do
 not establish compatibility, prices or quality. The twelve controlled tasks measure
 specific behavior; broader usefulness still needs real-user feedback.
 
-Optional tools in the portable package/source checkout:
-
-```powershell
-# Discovery only; -Force bypasses the local schedule/disabled preference explicitly.
-.\tools\Check-ModelUpdates.ps1 -Force
-# Optional weekly discovery while the app is closed (logged-in Windows user).
-.\tools\Install-ModelCheckTask.ps1 -WhatIf
-.\tools\Install-ModelCheckTask.ps1
-# Remove only the task with this name.
-.\tools\Install-ModelCheckTask.ps1 -Remove
-# Also requires paid evaluation to be enabled in the app.
-.\tools\Compare-Models.ps1 -Role Answer -CandidateModel YOUR_MODEL_ID -AllowPaidEvaluation
-```
-
-The app does not install a scheduled task itself. Keep its folder in a stable
-location if you register one. Session-only keys are unavailable to a closed-app check.
+Command-line discovery and comparison tools, including the optional weekly
+scheduled task, are described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 See [the implementation and decision policy](docs/MODEL-MANAGEMENT.md).
 
 ![Model comparison results in the actual desktop app](docs/model-recommendations.png)
@@ -158,55 +192,15 @@ remain the authority for your account's total bill, taxes and account-specific c
 - Managed logs rotate at 5 MB; startup retains at most 100 managed logs and removes
   managed logs older than 30 days. Other files in `logs/` are left alone.
 
-See [privacy details](docs/PRIVACY.md). Legacy console scripts in `legacy/` are
-historical references and are outside the current product workflow.
+See [privacy details](docs/PRIVACY.md) and [SECURITY.md](SECURITY.md) for how to
+report a vulnerability. Legacy console scripts in `legacy/` are historical references
+and are outside the current product workflow.
 
-## Validate (source checkout)
+## Developing, testing and building
 
-```powershell
-powershell.exe -NoProfile -STA -File .\tests\Invoke-Tests.ps1
-```
-
-Headless core/contract checks: `pwsh -File ./tests/Invoke-Tests.ps1 -Headless`.
-The Windows suite also operates the actual Refine, Use-prompt and Cancel buttons,
-verifies restart recovery, and checks the complete XAML. Mock tests make no paid calls.
-
-Opt-in live acceptance uses configured credentials and synthetic public prompts:
-
-```powershell
-.\tools\Invoke-LiveAcceptance.ps1 -BudgetUsd 1.00 -EvaluationCases 3
-```
-
-The tool records provider outcomes, exact prompts/results, constraint checks and
-estimated usage in `build/live-acceptance/`. A partial result exits nonzero and
-keeps the evidence. Automated constraint checks are followed by human review of
-usefulness; they do not establish universal prompt-quality improvement.
-
-`tools/Invoke-LiveDesktopAcceptance.ps1` additionally operates the actual desktop
-buttons with synthetic prompts and verifies restart recovery under isolated data.
-
-## Build a portable release (source checkout)
-
-```powershell
-# Run from the project directory, in either Windows PowerShell or PowerShell 7.
-# These commands install prerequisites into Windows PowerShell's user location.
-powershell.exe -NoProfile -Command "Install-Module ps2exe -RequiredVersion 1.0.17 -Scope CurrentUser"
-powershell.exe -NoProfile -Command "Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-PortableExe.ps1
-```
-
-The compiler remains pinned to **ps2exe 1.0.17** for reproducible builds; installing
-1.0.18 does not replace that requirement. The build also finds compatible modules
-already installed in either `Documents/WindowsPowerShell/Modules` or
-`Documents/PowerShell/Modules`, using the actual redirected Documents location.
-It does not change your persistent module path or automatically install modules.
-
-The build runs Windows tests, compiles the EXE, copies only declared resources,
-starts the EXE under a fresh data directory, validates its smoke report, and writes
-a ZIP, a file manifest and SHA-256 checksums under `dist/`. Existing output folders
-are preserved with a `.previous-...` suffix. The build does not publish a release.
-A valid code-signing certificate can be supplied with `-CertificateThumbprint`.
-Unsigned artifacts are labeled `NotSigned`, never presented as trusted-publisher signed.
+Running the test suite, live acceptance tools and the portable EXE build are covered
+in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Contribution guidelines are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 See [release instructions and acceptance gates](docs/RELEASE.md) and
 [CHANGELOG.md](CHANGELOG.md). Licensed under the [MIT License](LICENSE).

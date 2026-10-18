@@ -8,6 +8,7 @@ Current product documentation for **1.0.0-rc.2**:
 - [Model discovery and recommendation policy](MODEL-MANAGEMENT.md).
 - [Privacy and local data](PRIVACY.md).
 - [Release and support instructions](RELEASE.md).
+- [Developing, testing and building from source](DEVELOPMENT.md).
 - [Release roadmap](../ROADMAP.md).
 
 ![Actual desktop session with synthetic prompts](example-session.png)

@@ -5,3 +5,7 @@ npm-debug.log
 dist/
 build/
 logs/
+
+# Local build/tooling output (not part of the product)
+.next/
+output/

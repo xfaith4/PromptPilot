@@ -54,7 +54,7 @@ try {
     foreach ($file in @('PromptPilot.Core.ps1', 'PromptPilot.Models.ps1', 'PromptPilot.ModelWindow.ps1', 'Prompt_Pilot.Models.xaml', 'Prompt_Pilot.MainWindow.xaml', 'Start Prompt Pilot.cmd', 'Start-PromptPilot.ps1', 'README.md', 'LICENSE', 'CHANGELOG.md', 'ROADMAP.md')) { Copy-Item -LiteralPath (Join-Path $root $file) -Destination (Join-Path $stage $file) }
     foreach ($directory in @('data', 'assets', 'evaluations')) { Copy-Item -LiteralPath (Join-Path $root $directory) -Destination (Join-Path $stage $directory) -Recurse }
     $null = [IO.Directory]::CreateDirectory((Join-Path $stage 'docs'))
-    foreach ($file in @('PRIVACY.md', 'RELEASE.md', 'VALIDATION.md', 'MODEL-MANAGEMENT.md', 'example-session.png', 'model-recommendations.png')) { Copy-Item -LiteralPath (Join-Path $root ('docs/' + $file)) -Destination (Join-Path $stage ('docs/' + $file)) }
+    foreach ($file in @('PRIVACY.md', 'RELEASE.md', 'VALIDATION.md', 'MODEL-MANAGEMENT.md', 'DEVELOPMENT.md', 'example-session.png', 'model-recommendations.png')) { Copy-Item -LiteralPath (Join-Path $root ('docs/' + $file)) -Destination (Join-Path $stage ('docs/' + $file)) }
     $null = [IO.Directory]::CreateDirectory((Join-Path $stage 'tools'))
     foreach ($file in @('Check-ModelUpdates.ps1','Compare-Models.ps1','Install-ModelCheckTask.ps1')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $stage ('tools/' + $file)) }
     $signature = 'NotSigned'
