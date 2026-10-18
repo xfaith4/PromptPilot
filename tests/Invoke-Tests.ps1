@@ -5,27 +5,33 @@
 .DESCRIPTION
     The XAML tests need XamlReader, which needs STA and the WPF assemblies.
     Invoke as:  pwsh -STA -File tests/Invoke-Tests.ps1
-    Exits 0 only when every test passes.
+    Add -Headless to run logging/API tests without Windows WPF.
+    Exits 0 only when every selected test passes.
 #>
 [CmdletBinding()]
-param()
+param([switch]$Headless)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+if (-not $Headless -and [Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     throw 'Run this under an STA host: pwsh -STA -File tests/Invoke-Tests.ps1'
 }
 
-Add-Type -AssemblyName PresentationFramework | Out-Null
-Add-Type -AssemblyName PresentationCore     | Out-Null
-Add-Type -AssemblyName WindowsBase          | Out-Null
+if (-not $Headless) {
+    Add-Type -AssemblyName PresentationFramework | Out-Null
+    Add-Type -AssemblyName PresentationCore     | Out-Null
+    Add-Type -AssemblyName WindowsBase          | Out-Null
+}
 
 Import-Module Pester -MinimumVersion 5.0
 
 $config = New-PesterConfiguration
-$config.Run.Path = Join-Path $PSScriptRoot 'PromptPilot.Tests.ps1'
+$config.Run.Path = $PSScriptRoot
 $config.Output.Verbosity = 'Detailed'
-$config.Run.Exit = $true
+if ($Headless) { $config.Filter.ExcludeTag = @('WindowsUI') }
+$config.Run.Exit = $false
+$config.Run.PassThru = $true
 
-Invoke-Pester -Configuration $config
+$result = Invoke-Pester -Configuration $config
+if ($result.FailedCount -gt 0 -or $result.PassedCount -lt 1) { exit 1 }

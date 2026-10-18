@@ -1,0 +1,8 @@
+{
+  "name": "Prompt Pilot",
+  "version": "1.0.0-rc.1",
+  "fileVersion": "1.0.0.0",
+  "settingsSchema": 2,
+  "sessionSchema": 1,
+  "ps2exeVersion": "1.0.17"
+}

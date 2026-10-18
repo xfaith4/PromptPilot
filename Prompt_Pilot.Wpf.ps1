@@ -1,2053 +1,756 @@
-[cmdletBinding()]
-param()
-
-# =============================================================================
-# [10] PowerShell and OS version guard — must run before loading any assemblies
-# =============================================================================
-if ($PSVersionTable.PSVersion.Major -lt 5) {
-    throw "This script requires PowerShell 5.1 or later. Detected: $($PSVersionTable.PSVersion)"
-}
-# $IsWindows is only defined in PS 6+; on PS 5.1 it is $null (falsy), so the
-# second condition safely short-circuits via the -ge 6 test.
-if ((-not $IsWindows) -and ($PSVersionTable.PSVersion.Major -ge 6)) {
-    throw "This script requires Windows. WPF is not available on non-Windows platforms."
-}
+﻿[CmdletBinding()]
+param(
+    [string]$DataDirectory = '',
+    [switch]$SmokeTest,
+    [string]$SmokeReportPath = ''
+)
 
 $ErrorActionPreference = 'Stop'
+if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'Prompt Pilot requires Windows with WPF and PowerShell 5.1 or later.' }
+if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { throw 'Launch Prompt Pilot using Start Prompt Pilot.cmd, or run PowerShell with -STA.' }
+$script:AppDirectory = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { [IO.Path]::GetDirectoryName([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) }
+. (Join-Path $script:AppDirectory 'PromptPilot.Core.ps1')
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+$script:Product = Read-PilotJson (Join-Path $script:AppDirectory 'data/product.json')
+if ($SmokeTest -and (-not $DataDirectory -or -not $SmokeReportPath)) { throw 'Smoke testing requires an isolated data directory and a report path.' }
+if (-not $DataDirectory) { $DataDirectory = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Prompt Pilot' }
+$script:DataDirectory = [IO.Path]::GetFullPath($DataDirectory)
+$script:SettingsPath = Join-Path $script:DataDirectory 'settings.json'
+$script:SessionsDirectory = Join-Path $script:DataDirectory 'sessions'
+$null = [IO.Directory]::CreateDirectory($script:DataDirectory)
+$script:SessionKeys = @{}
+$script:KnownSecrets = @()
+$script:Controls = @{}
+$script:Operation = $null
+$script:Dirty = $false
+$script:LoadingSession = $false
+$script:Closing = $false
+$script:SettingsReadError = ''
+$script:LogFilePath = ''
+$script:LogFailure = ''
+$script:LastEditUtc = [DateTime]::UtcNow
+$script:SettingsContext = $null
+$script:InstancePath = Join-Path $script:DataDirectory 'instance.json'
+$script:Mutex = $null
+$script:OwnsMutex = $false
 
-# Load WPF assemblies (works in Windows PowerShell 5.1 and pwsh on Windows)
-Add-Type -AssemblyName PresentationFramework | Out-Null
-Add-Type -AssemblyName PresentationCore       | Out-Null
-Add-Type -AssemblyName WindowsBase            | Out-Null
-Add-Type -AssemblyName System.Windows.Forms   | Out-Null
-
-# =============================================================================
-# [1] Centralised defaults — edit here, not scattered throughout the file
-# =============================================================================
-$script:DefaultModel           = 'gpt-5-mini'
-$script:DefaultIterations      = 3
-$script:PricePer1kInputTokens  = 0.00015
-$script:PricePer1kOutputTokens = 0.00060
-$script:DefaultProvider        = 'OpenAI'
-$script:ProviderDefinitions    = [ordered]@{
-    OpenAI = [ordered]@{
-        DisplayName      = 'OpenAI'
-        ApiBase          = 'https://api.openai.com/v1'
-        ChatEndpointPath = 'chat/completions'
-        EnvVars          = @('OPENAI_API_KEY')
-        DefaultModel     = 'gpt-5-mini'
-        DefaultPricePer1kInputTokens  = $script:PricePer1kInputTokens
-        DefaultPricePer1kOutputTokens = $script:PricePer1kOutputTokens
-        Protocol         = 'OpenAI'
+function Write-PilotLog {
+    param([string]$Message)
+    $safe = Protect-PilotText $Message $script:KnownSecrets
+    $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffzzz'), $safe
+    if ($script:Controls.ContainsKey('LogTextBox')) {
+        $box = $script:Controls.LogTextBox
+        if ($box.LineCount -gt 1500) { $box.Text = ($box.Text -split "`n" | Select-Object -Last 750) -join "`n" }
+        $box.AppendText($line + "`n"); $box.ScrollToEnd()
     }
-    Anthropic = [ordered]@{
-        DisplayName      = 'Anthropic'
-        ApiBase          = 'https://api.anthropic.com'
-        ChatEndpointPath = 'v1/messages'
-        EnvVars          = @('ANTHROPIC_API_KEY')
-        DefaultModel     = 'claude-sonnet-4-20250514'
-        DefaultPricePer1kInputTokens  = $script:PricePer1kInputTokens
-        DefaultPricePer1kOutputTokens = $script:PricePer1kOutputTokens
-        Protocol         = 'Anthropic'
-    }
-    GitHubCopilot = [ordered]@{
-        DisplayName      = 'GitHub Copilot'
-        ApiBase          = 'https://models.inference.ai.azure.com'
-        ChatEndpointPath = 'chat/completions'
-        EnvVars          = @('GITHUB_COPILOT_API_KEY', 'GITHUB_TOKEN')
-        DefaultModel     = 'gpt-4.1'
-        DefaultPricePer1kInputTokens  = $script:PricePer1kInputTokens
-        DefaultPricePer1kOutputTokens = $script:PricePer1kOutputTokens
-        Protocol         = 'OpenAI'
-    }
-}
-$script:ActiveProvider         = $script:DefaultProvider
-$script:SavedApiKeys           = @{}
-$script:ProviderSettings       = @{}
-$script:SettingsDir            = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Prompt Pilot'
-$script:SettingsPath           = Join-Path $script:SettingsDir 'settings.json'
-
-# [3] Cancellation flag — set by Cancel button or AcceptIterationButton
-$script:CancelRequested = $false
-
-# [9] Session API keys — stored in memory only, never written to disk or env vars
-$script:SessionApiKeys = @{}
-
-# [7] Active log file path — $null means file logging is disabled
-$script:LogFilePath = $null
-
-# [11] Answer-mode background execution state
-$script:AnswerTaskState = $null
-$script:AnswerTaskTimer = $null
-
-# =============================================================================
-# Utility functions
-# =============================================================================
-
-function Show-Status {
-    <#
-    .SYNOPSIS
-        Updates the status bar message and, optionally, the token-usage/cost line.
-    #>
-    param(
-        [string]$Message,
-        [string]$Usage = $null
-    )
-
-    if ($script:StatusTextBlock) {
-        $script:StatusTextBlock.Text = $Message
-    }
-    if ($Usage -and $script:UsageTextBlock) {
-        $script:UsageTextBlock.Text = $Usage
-    }
-}
-
-function Append-Log {
-    <#
-    .SYNOPSIS
-        Appends a timestamped line to the activity log TextBox and, when enabled,
-        to the log file on disk. Never logs API key values.
-    #>
-    param(
-        [string]$Message
-    )
-
-    if (-not $script:LogTextBox) { return }
-
-    $timestamp = (Get-Date).ToString('HH:mm:ss')
-    $line = "[{0}] {1}" -f $timestamp, $Message
-    $script:LogTextBox.AppendText("$line`n")
-    $script:LogTextBox.ScrollToEnd()
-
-    # [7] Append to log file if one is configured
     if ($script:LogFilePath) {
         try {
-            Add-Content -LiteralPath $script:LogFilePath -Value $line -Encoding UTF8
+            if ((Get-Item -LiteralPath $script:LogFilePath).Length -gt 5242880) { Initialize-PilotLogging }
+            Add-Content -LiteralPath $script:LogFilePath -Value $line -Encoding UTF8 -ErrorAction Stop
         }
-        catch {
-            # Silently ignore file-write failures to prevent recursive log loops
-        }
+        catch { $script:LogFailure = 'The log file could not be written. Check folder permissions and disk space.' }
     }
 }
 
-function Get-ProviderDefinition {
-    param(
-        [string]$ProviderName = $script:ActiveProvider
-    )
-
-    if (-not $script:ProviderDefinitions.Contains($ProviderName)) {
-        throw "Unsupported provider: $ProviderName"
-    }
-
-    return $script:ProviderDefinitions[$ProviderName]
-}
-
-function New-ProviderRuntimeSettings {
-    param(
-        [string]$ProviderName = $script:ActiveProvider
-    )
-
-    $provider = Get-ProviderDefinition -ProviderName $ProviderName
-
-    return [ordered]@{
-        Model                   = [string]$provider.DefaultModel
-        PricePer1kInputTokens   = [double]$provider.DefaultPricePer1kInputTokens
-        PricePer1kOutputTokens  = [double]$provider.DefaultPricePer1kOutputTokens
-    }
-}
-
-function Get-ProviderRuntimeSettings {
-    param(
-        [string]$ProviderName = $script:ActiveProvider
-    )
-
-    if (-not $script:ProviderSettings.ContainsKey($ProviderName) -or -not $script:ProviderSettings[$ProviderName]) {
-        $script:ProviderSettings[$ProviderName] = New-ProviderRuntimeSettings -ProviderName $ProviderName
-    }
-
-    return $script:ProviderSettings[$ProviderName]
-}
-
-function Protect-Secret {
-    param([string]$PlainText)
-
-    if ([string]::IsNullOrWhiteSpace($PlainText)) {
-        return $null
-    }
-
-    $secureValue = ConvertTo-SecureString -String $PlainText -AsPlainText -Force
-    return ConvertFrom-SecureString -SecureString $secureValue
-}
-
-function Unprotect-Secret {
-    param([string]$ProtectedText)
-
-    if ([string]::IsNullOrWhiteSpace($ProtectedText)) {
-        return $null
-    }
-
-    $secureValue = ConvertTo-SecureString -String $ProtectedText
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureValue)
-
-    try {
-        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    }
-    finally {
-        if ($bstr -ne [IntPtr]::Zero) {
-            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-        }
-    }
-}
-
-function Load-ProviderSettings {
-    $settings = @{
-        ActiveProvider = $script:DefaultProvider
-        Keys           = @{}
-        Providers      = @{}
-    }
-
-    foreach ($providerName in $script:ProviderDefinitions.Keys) {
-        $settings.Keys[$providerName] = $null
-        $settings.Providers[$providerName] = New-ProviderRuntimeSettings -ProviderName $providerName
-    }
-
-    if (-not (Test-Path -LiteralPath $script:SettingsPath)) {
-        return $settings
-    }
-
-    try {
-        $rawSettings = Get-Content -LiteralPath $script:SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-
-        if ($rawSettings.ActiveProvider -and $script:ProviderDefinitions.Contains([string]$rawSettings.ActiveProvider)) {
-            $settings.ActiveProvider = [string]$rawSettings.ActiveProvider
-        }
-
-        if ($rawSettings.Keys) {
-            foreach ($providerName in $script:ProviderDefinitions.Keys) {
-                $property = $rawSettings.Keys.PSObject.Properties[$providerName]
-                if ($property -and -not [string]::IsNullOrWhiteSpace($property.Value)) {
-                    $protectedValue = [string]$property.Value
-                    $settings.Keys[$providerName] = Unprotect-Secret -ProtectedText $protectedValue
+function Initialize-PilotLogging {
+    foreach ($directory in @((Join-Path $script:AppDirectory 'logs'), (Join-Path $script:DataDirectory 'logs'))) {
+        try {
+            $null = [IO.Directory]::CreateDirectory($directory)
+            $name = 'Prompt_Pilot_{0}_{1}.log' -f (Get-Date -Format 'yyyyMMdd_HHmmss_fff'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
+            $script:LogFilePath = Join-Path $directory $name
+            [IO.File]::WriteAllText($script:LogFilePath, '', [Text.UTF8Encoding]::new($false))
+            $managedLogs = @(Get-ChildItem -LiteralPath $directory -Filter 'Prompt_Pilot_*.log' -File | Sort-Object LastWriteTimeUtc -Descending)
+            for ($index = 0; $index -lt $managedLogs.Count; $index++) {
+                if ($managedLogs[$index].FullName -ne $script:LogFilePath -and ($index -ge 100 -or $managedLogs[$index].LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-30))) {
+                    Remove-Item -LiteralPath $managedLogs[$index].FullName -ErrorAction SilentlyContinue
                 }
             }
+            Write-PilotLog ('Session started. Version={0}; PowerShell={1}; logs={2}' -f $script:Product.version, $PSVersionTable.PSVersion, $script:LogFilePath)
+            return
         }
-
-        if ($rawSettings.Providers) {
-            foreach ($providerName in $script:ProviderDefinitions.Keys) {
-                $property = $rawSettings.Providers.PSObject.Properties[$providerName]
-                if (-not $property -or -not $property.Value) {
-                    continue
-                }
-
-                $providerSettings = New-ProviderRuntimeSettings -ProviderName $providerName
-                $rawProvider = $property.Value
-
-                if ($rawProvider.Model -and -not [string]::IsNullOrWhiteSpace([string]$rawProvider.Model)) {
-                    $providerSettings.Model = [string]$rawProvider.Model
-                }
-
-                $inputPrice = $providerSettings.PricePer1kInputTokens
-                if ($rawProvider.PricePer1kInputTokens -ne $null -and [double]::TryParse([string]$rawProvider.PricePer1kInputTokens, [ref]$inputPrice)) {
-                    $providerSettings.PricePer1kInputTokens = $inputPrice
-                }
-
-                $outputPrice = $providerSettings.PricePer1kOutputTokens
-                if ($rawProvider.PricePer1kOutputTokens -ne $null -and [double]::TryParse([string]$rawProvider.PricePer1kOutputTokens, [ref]$outputPrice)) {
-                    $providerSettings.PricePer1kOutputTokens = $outputPrice
-                }
-
-                $settings.Providers[$providerName] = $providerSettings
-            }
-        }
+        catch { $script:LogFilePath = '' }
     }
-    catch {
-        if ($script:LogTextBox) {
-            Append-Log -Message ("WARNING: Failed to load saved settings: {0}" -f $_.Exception.Message)
-        }
-    }
-
-    return $settings
+    $script:LogFailure = 'Disk logging is unavailable. Check the app and user-data folder permissions.'
 }
 
-function Save-ProviderSettings {
-    try {
-        if (-not (Test-Path -LiteralPath $script:SettingsDir)) {
-            New-Item -ItemType Directory -Path $script:SettingsDir -Force | Out-Null
-        }
+function Set-PilotFeedback {
+    param([string]$Message, [switch]$ErrorState)
+    $script:Controls.FeedbackTextBlock.Text = Protect-PilotText $Message $script:KnownSecrets
+    $script:Controls.FeedbackTextBlock.Foreground = if ($ErrorState) { [Windows.Media.Brushes]::Firebrick } else { [Windows.Media.Brushes]::SlateGray }
+    if ($ErrorState) { $script:Controls.ActivityExpander.IsExpanded = $true; Write-PilotLog $Message }
+}
 
-        $keysPayload = [ordered]@{}
-        foreach ($providerName in $script:ProviderDefinitions.Keys) {
-            $plainText = $script:SavedApiKeys[$providerName]
-            $keysPayload[$providerName] = if ([string]::IsNullOrWhiteSpace($plainText)) {
-                $null
-            }
-            else {
-                Protect-Secret -PlainText $plainText
-            }
-        }
+function Save-PilotUiPreferences {
+    if ($script:SettingsReadError) { throw $script:SettingsReadError }
+    Save-PilotPreferences $script:SettingsPath $script:Preferences
+}
 
-        $providersPayload = [ordered]@{}
-        foreach ($providerName in $script:ProviderDefinitions.Keys) {
-            $providerSettings = Get-ProviderRuntimeSettings -ProviderName $providerName
-            $providersPayload[$providerName] = [ordered]@{
-                Model                  = [string]$providerSettings.Model
-                PricePer1kInputTokens  = [double]$providerSettings.PricePer1kInputTokens
-                PricePer1kOutputTokens = [double]$providerSettings.PricePer1kOutputTokens
-            }
-        }
+function Get-PilotUiCredential {
+    param([string]$ProviderName, [string]$TypedKey = '')
+    if ($TypedKey) { $key = $TypedKey }
+    else { $key = (Get-PilotCredential $ProviderName $script:Preferences $script:SessionKeys).Key }
+    if ([string]::IsNullOrWhiteSpace($key)) { throw 'Configure an API key in Providers and API keys before running.' }
+    if ($key -notin $script:KnownSecrets) { $script:KnownSecrets += $key }
+    return $key
+}
 
-        $settingsPayload = [ordered]@{
-            ActiveProvider = $script:ActiveProvider
-            Keys           = $keysPayload
-            Providers      = $providersPayload
-        }
-
-        $settingsPayload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:SettingsPath -Encoding UTF8
+function Update-PilotProviderUi {
+    $provider = (Get-PilotProviders)[$script:Session.ProviderName]
+    try { $source = (Get-PilotCredential $provider.Name $script:Preferences $script:SessionKeys).Source }
+    catch { $source = 'saved key unavailable for this Windows user' }
+    $script:Controls.ProviderButton.Content = '{0} | {1}' -f $provider.DisplayName, $source
+    $pricing = Get-PilotPricing $provider.Name $script:Session.Model $script:Preferences.PricingOverrides
+    if ($pricing.Known) {
+        $script:Controls.PricingTextBlock.Text = '{0} | Est. rates: ${1:g} input / ${2:g} output per 1M tokens' -f $script:Session.Model, $pricing.InputPerMillion, $pricing.OutputPerMillion
     }
-    catch {
-        throw "Unable to save provider settings: $($_.Exception.Message)"
+    else { $script:Controls.PricingTextBlock.Text = $script:Session.Model + ' | Set token prices in provider settings before running.' }
+    $script:Controls.PricingTextBlock.ToolTip = $pricing.Source + ' | Checked: ' + $pricing.CheckedOn
+}
+
+function Set-PilotUiMode {
+    param([ValidateSet('Refine', 'Answer')][string]$Mode)
+    $script:Session.Mode = $Mode
+    $script:Controls.ModeRefineRadio.IsChecked = ($Mode -eq 'Refine')
+    $script:Controls.ModeAnswerRadio.IsChecked = ($Mode -eq 'Answer')
+    $script:Controls.RunButton.Content = if ($Mode -eq 'Refine') { 'Refine prompt' } else { 'Get answer' }
+    $script:Controls.IterationsTextBox.IsEnabled = ($Mode -eq 'Refine' -and -not $script:Operation)
+    $script:Controls.AnswerSourcePanel.Visibility = if ($Mode -eq 'Answer') { 'Visible' } else { 'Collapsed' }
+}
+
+function Set-PilotBusy {
+    param([bool]$Busy)
+    foreach ($name in @('RunButton', 'NewSessionButton', 'OpenSessionButton', 'SaveSessionButton', 'BrowseButton', 'IncludeFileCheckBox', 'ModeRefineRadio', 'ModeAnswerRadio', 'ProfileComboBox', 'ExampleComboBox', 'IterationsTextBox', 'MaxOutputTextBox', 'BudgetTextBox', 'PromptTextBox', 'GoalsTextBox', 'ProjectContextTextBox', 'FinalPromptTextBox', 'UsePromptButton', 'ProviderButton', 'AutosaveCheckBox', 'AnswerSourceComboBox', 'MenuNewSession', 'MenuOpenSession', 'MenuSaveSession', 'MenuSettingsApiKey')) {
+        $script:Controls[$name].IsEnabled = -not $Busy
+    }
+    $script:Controls.CancelButton.IsEnabled = $Busy
+    $script:Controls.AcceptIterationButton.IsEnabled = ($Busy -and $script:Operation -and $script:Operation.Mode -eq 'Refine' -and $script:Session.Revisions.Count -gt 0)
+    $script:Controls.BusyProgressBar.Visibility = if ($Busy) { 'Visible' } else { 'Collapsed' }
+    if (-not $Busy) { $script:Controls.IterationsTextBox.IsEnabled = ($script:Session.Mode -eq 'Refine') }
+    Update-PilotActionState
+}
+
+function Update-PilotActionState {
+    if (-not $script:Controls.ContainsKey('CopyButton')) { return }
+    $hasDraft = -not [string]::IsNullOrWhiteSpace($script:Controls.FinalPromptTextBox.Text)
+    $script:Controls.CopyButton.IsEnabled = $hasDraft
+    $script:Controls.UsePromptButton.IsEnabled = ($hasDraft -and -not $script:Operation)
+    $script:Controls.CopyTaskOutputButton.IsEnabled = -not [string]::IsNullOrWhiteSpace($script:Controls.TaskOutputTextBox.Text)
+}
+
+function Mark-PilotDirty {
+    Update-PilotActionState
+    if (-not $script:LoadingSession) { $script:Dirty = $true; $script:LastEditUtc = [DateTime]::UtcNow; $script:Controls.SaveStateTextBlock.Text = 'Unsaved changes - stored locally when autosave is enabled.' }
+}
+
+function Sync-PilotSessionFromUi {
+    param([switch]$ValidateRunLimits)
+    $c = $script:Controls
+    $script:Session.BasePrompt = $c.PromptTextBox.Text
+    $script:Session.Goals = $c.GoalsTextBox.Text
+    $script:Session.ProjectContext = $c.ProjectContextTextBox.Text
+    $script:Session.FilePath = $c.FilePathTextBox.Text
+    $script:Session.IncludeFile = ($c.IncludeFileCheckBox.IsChecked -eq $true)
+    $script:Session.FinalPrompt = $c.FinalPromptTextBox.Text
+    $script:Session.Answer = $c.TaskOutputTextBox.Text
+    $script:Session.Profile = [string]$c.ProfileComboBox.SelectedItem
+    $script:Session.AnswerSource = if ($c.AnswerSourceComboBox.SelectedIndex -eq 0) { 'Draft' } else { 'Original' }
+    $iterations = 0; $output = 0; $budget = 0.0
+    if ([int]::TryParse($c.IterationsTextBox.Text, [ref]$iterations) -and $iterations -in 1..5) { $script:Session.Iterations = $iterations }
+    elseif ($ValidateRunLimits) { throw 'Iterations must be a whole number from 1 to 5.' }
+    if ([int]::TryParse($c.MaxOutputTextBox.Text, [ref]$output) -and $output -ge 256 -and $output -le 8192) { $script:Session.MaxOutputTokens = $output }
+    elseif ($ValidateRunLimits) { throw 'Output token limit must be a whole number from 256 to 8,192.' }
+    if ([double]::TryParse($c.BudgetTextBox.Text, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$budget) -and $budget -gt 0 -and $budget -le 50 -and -not [double]::IsNaN($budget)) { $script:Session.BudgetUsd = $budget }
+    elseif ($ValidateRunLimits) { throw 'Run budget must be a USD amount greater than zero and at most 50, using a decimal point.' }
+
+}
+
+function Save-PilotAutosave {
+    param([switch]$Force)
+    if (-not $script:Preferences.Autosave -and -not $Force) { return }
+    if ($script:LoadingSession -or -not $script:Session) { return }
+    Sync-PilotSessionFromUi
+    if (-not $script:Session.BasePrompt -and -not $script:Session.FinalPrompt -and -not $script:Session.Answer) { return }
+    $path = Join-Path $script:SessionsDirectory ($script:Session.Id + '.json')
+    Save-PilotSession $path $script:Session
+    $script:Preferences.LastSessionId = $script:Session.Id
+    if (-not $script:SettingsReadError) { Save-PilotUiPreferences }
+    $script:Dirty = $false
+    $script:Controls.SessionTitleTextBlock.Text = $script:Session.Title
+    $script:Controls.SaveStateTextBlock.Text = 'Saved locally at ' + (Get-Date -Format 'HH:mm:ss')
+}
+
+function Update-PilotComparison {
+    if (-not $script:Controls.FinalPromptTextBox.Text) { return }
+    $original = $script:Controls.PromptTextBox.Text
+    if ($script:Controls.RevisionListBox.SelectedItem) { $original = $script:Controls.RevisionListBox.SelectedItem.OriginalPrompt }
+    $document = [Windows.Documents.FlowDocument]::new()
+    $document.FontFamily = [Windows.Media.FontFamily]::new('Consolas')
+    $document.FontSize = 12
+    $document.PagePadding = [Windows.Thickness]::new(8)
+    foreach ($line in @(Compare-PilotText $original $script:Controls.FinalPromptTextBox.Text)) {
+        $prefix = switch ($line.Kind) { 'Added' { '+ ' } 'Removed' { '- ' } default { '  ' } }
+        $paragraph = [Windows.Documents.Paragraph]::new([Windows.Documents.Run]::new($prefix + $line.Text))
+        $paragraph.Margin = [Windows.Thickness]::new(0)
+        if ($line.Kind -eq 'Added') { $paragraph.Background = [Windows.Media.Brushes]::Honeydew; $paragraph.Foreground = [Windows.Media.Brushes]::DarkGreen }
+        if ($line.Kind -eq 'Removed') { $paragraph.Background = [Windows.Media.Brushes]::MistyRose; $paragraph.Foreground = [Windows.Media.Brushes]::DarkRed }
+        $null = $document.Blocks.Add($paragraph)
+    }
+    $script:Controls.DiffTextBox.Document = $document
+}
+
+function Update-PilotHistory {
+    $script:Controls.RevisionListBox.Items.Clear()
+    foreach ($revision in @($script:Session.Revisions)) {
+        $null = $script:Controls.RevisionListBox.Items.Add([pscustomobject]@{ Label = ('Revision {0} | {1} | {2}' -f $revision.Number, $revision.Model, $revision.AtUtc); Text = $revision.Text; OriginalPrompt = (Get-PilotValue $revision 'OriginalPrompt' $script:Session.BasePrompt) })
     }
 }
 
-function Get-EnvironmentProviderKey {
-    param([string]$ProviderName = $script:ActiveProvider)
-
-    $provider = Get-ProviderDefinition -ProviderName $ProviderName
-    foreach ($envVar in $provider.EnvVars) {
-        $candidate = [Environment]::GetEnvironmentVariable($envVar)
-        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-            return $candidate
-        }
-    }
-
-    return $null
-}
-
-function Get-ProviderCredentialState {
-    param([string]$ProviderName = $script:ActiveProvider)
-
-    if ($script:SessionApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SessionApiKeys[$ProviderName])) {
-        return [pscustomobject]@{ Source = 'session'; Summary = 'session key'; IsConfigured = $true }
-    }
-
-    if ($script:SavedApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SavedApiKeys[$ProviderName])) {
-        return [pscustomobject]@{ Source = 'saved'; Summary = 'saved key'; IsConfigured = $true }
-    }
-
-    if (Get-EnvironmentProviderKey -ProviderName $ProviderName) {
-        return [pscustomobject]@{ Source = 'environment'; Summary = 'env key'; IsConfigured = $true }
-    }
-
-    return [pscustomobject]@{ Source = 'none'; Summary = 'no key configured'; IsConfigured = $false }
-}
-
-function Update-ProviderIndicator {
-    if (-not $script:ProviderStatusTextBlock) {
+function Update-PilotAttachmentPreview {
+    $c = $script:Controls
+    if (-not $c.IncludeFileCheckBox.IsChecked) {
+        $c.FilePreviewTextBox.Visibility = 'Collapsed'
+        $c.FileSummaryTextBlock.Text = if ($c.FilePathTextBox.Text) { 'File selected. Its contents will not be sent until inclusion is checked.' } else { 'Choose a supported text file up to 256 KB, then check inclusion to preview its contents.' }
         return
     }
-
-    $provider = Get-ProviderDefinition
-    $credentialState = Get-ProviderCredentialState
-    $script:ProviderStatusTextBlock.Text = "Provider: {0} | {1}" -f $provider.DisplayName, $credentialState.Summary
+    try {
+        $file = Read-PilotAttachment $c.FilePathTextBox.Text
+        $c.FilePreviewTextBox.Text = $file.Text
+        $c.FilePreviewTextBox.Visibility = 'Visible'
+        $c.FileSummaryTextBlock.Text = '{0}: including {1:N0} of {2:N0} characters{3}.' -f $file.Name, $file.IncludedCharacters, $file.OriginalCharacters, $(if ($file.Truncated) { ' (excerpt truncated to 20,000 characters)' } else { '' })
+    }
+    catch { $c.IncludeFileCheckBox.IsChecked = $false; Set-PilotFeedback $_.Exception.Message -ErrorState }
 }
 
-function Set-ActiveProvider {
-    param(
-        [Parameter(Mandatory)][string]$ProviderName,
-        [switch]$SkipSave
-    )
+function Load-PilotUiSession {
+    param([hashtable]$Session)
+    $script:LoadingSession = $true
+    try {
+        $script:Session = ConvertTo-PilotSession $Session
+        $c = $script:Controls
+        $c.PromptTextBox.Text = $script:Session.BasePrompt
+        $c.GoalsTextBox.Text = $script:Session.Goals
+        $c.ProjectContextTextBox.Text = $script:Session.ProjectContext
+        $c.FilePathTextBox.Text = $script:Session.FilePath
+        $c.IncludeFileCheckBox.IsChecked = $script:Session.IncludeFile
+        $c.FinalPromptTextBox.Text = $script:Session.FinalPrompt
+        $c.TaskOutputTextBox.Text = $script:Session.Answer
+        $c.ProfileComboBox.SelectedItem = $script:Session.Profile
+        $c.IterationsTextBox.Text = [string]$script:Session.Iterations
+        $c.MaxOutputTextBox.Text = [string]$script:Session.MaxOutputTokens
+        $c.BudgetTextBox.Text = $script:Session.BudgetUsd.ToString('0.00######', [Globalization.CultureInfo]::InvariantCulture)
+        $c.AnswerSourceComboBox.SelectedIndex = if ($script:Session.AnswerSource -eq 'Draft') { 0 } else { 1 }
+        $c.SessionTitleTextBlock.Text = $script:Session.Title
+        Set-PilotUiMode $script:Session.Mode
+        Update-PilotProviderUi
+        Update-PilotHistory
+        Update-PilotComparison
+        Update-PilotAttachmentPreview
+        $c.OutputTabs.SelectedItem = if ($script:Session.Mode -eq 'Answer' -and $script:Session.Answer) { $c.AnswerTab } else { $c.DraftTab }
+        $c.UsageTextBlock.Text = if ((Get-PilotValue $script:Session.Usage 'Requests' 0) -gt 0) { Format-PilotUsage $script:Session.Usage } else { 'No requests yet' }
+        $script:Dirty = $false
+    }
+    finally { $script:LoadingSession = $false }
+}
 
-    $previousProviderName = if ($script:ProviderDefinitions.Contains($script:ActiveProvider)) {
-        [string]$script:ActiveProvider
+function Start-PilotBackground {
+    param([string]$Mode, [hashtable]$Options, $Provider, [string]$ApiKey, [string]$Target = 'Main')
+    if ($script:Operation) { throw 'A request is already running. Cancel it or wait for completion.' }
+    $events = [Collections.Concurrent.ConcurrentQueue[object]]::new()
+    $cancellation = [Threading.CancellationTokenSource]::new()
+    $worker = [Management.Automation.PowerShell]::Create()
+    $null = $worker.AddScript({
+        param($CorePath, $Mode, $Options, $Provider, $Key, $Events, $Token)
+        . $CorePath
+        Invoke-PilotWorkflow -Mode $Mode -Options $Options -Provider $Provider -ApiKey $Key -Events $Events -CancellationToken $Token
+    }).AddArgument((Join-Path $script:AppDirectory 'PromptPilot.Core.ps1')).AddArgument($Mode).AddArgument($Options).AddArgument($Provider).AddArgument($ApiKey).AddArgument($events).AddArgument($cancellation.Token)
+    try {
+        $handle = $worker.BeginInvoke()
+        $script:Operation = @{ Worker = $worker; Handle = $handle; Events = $events; Cancellation = $cancellation; Mode = $Mode; Target = $Target; KeepDraft = $false; Options = $Options }
+        Set-PilotBusy $true
+        if ($Target -eq 'Settings') { Set-PilotSettingsBusy $true }
+    }
+    catch { $worker.Dispose(); $cancellation.Dispose(); throw }
+}
+
+function Receive-PilotEvents {
+    if (-not $script:Operation) { return }
+    $eventItem = $null
+    while ($script:Operation.Events.TryDequeue([ref]$eventItem)) {
+        if ($eventItem.Kind -eq 'Log') { Write-PilotLog $eventItem.Message }
+        elseif ($eventItem.Kind -eq 'Progress') {
+            if ($script:Operation.Target -eq 'Settings' -and $script:SettingsContext) { $script:SettingsContext.Status.Text = $eventItem.Message }
+            else { Set-PilotFeedback $eventItem.Message }
+        }
+        elseif ($eventItem.Kind -eq 'Revision' -and $script:Operation.Target -eq 'Main') {
+            $revision = ConvertTo-PilotMap $eventItem.Data
+            $revision.Number = $script:Session.Revisions.Count + 1
+            $script:Session.Revisions += $revision
+            $script:Controls.FinalPromptTextBox.Text = $revision.Text
+            $script:Controls.AcceptIterationButton.IsEnabled = $true
+            Update-PilotHistory
+            Update-PilotComparison
+            Mark-PilotDirty
+            try { Save-PilotAutosave } catch { Set-PilotFeedback ('Revision ready, but autosave failed: ' + $_.Exception.Message) -ErrorState }
+        }
+    }
+}
+
+function Format-PilotUsage {
+    param($Usage)
+    $cost = if ($null -ne (Get-PilotValue $Usage 'CostUsd')) { '${0:F5} estimated cost' -f $Usage.CostUsd } else { 'Cost unknown (usage unavailable)' }
+    $inputCount = Get-PilotValue $Usage 'InputTokens'
+    $outputCount = Get-PilotValue $Usage 'OutputTokens'
+    if ($null -eq $inputCount -or $null -eq $outputCount) { return 'Token usage incomplete | ' + $cost }
+    return '{0:N0} input / {1:N0} output tokens | {2}' -f $inputCount, $outputCount, $cost
+}
+
+function Complete-PilotBackground {
+    if (-not $script:Operation -or -not $script:Operation.Handle.IsCompleted) { return }
+    $operation = $script:Operation
+    try {
+        Receive-PilotEvents
+        $results = @($operation.Worker.EndInvoke($operation.Handle))
+        if (-not $results.Count) { throw 'The provider worker ended without a result.' }
+        $result = ConvertTo-PilotMap $results[-1]
+        if ($operation.Target -eq 'Settings') { Complete-PilotSettingsOperation $operation $result }
+        else {
+            $script:Session.Usage = $result.Usage
+            $script:Controls.UsageTextBlock.Text = Format-PilotUsage $result.Usage
+            if ($operation.Mode -eq 'Answer' -and $result.OutputText) { $script:Controls.TaskOutputTextBox.Text = $result.OutputText; $script:Controls.OutputTabs.SelectedItem = $script:Controls.AnswerTab }
+            if ($operation.Mode -eq 'Refine' -and $result.OutputText) { $script:Controls.FinalPromptTextBox.Text = $result.OutputText; $script:Controls.OutputTabs.SelectedItem = $script:Controls.DraftTab }
+            Mark-PilotDirty
+            try { Save-PilotAutosave } catch { Write-PilotLog ('Autosave failed: ' + $_.Exception.Message) }
+            if ($result.Status -eq 'Completed') { Set-PilotFeedback $(if ($operation.Mode -eq 'Refine') { 'Draft ready. Compare the changes, edit if needed, then copy it or use it to get an answer.' } else { 'Answer ready. Copy it or export this session.' }) }
+            elseif ($result.Status -eq 'Cancelled') { Set-PilotFeedback $(if ($operation.KeepDraft) { 'Latest completed draft kept. Review it before continuing.' } else { 'Cancelled. Completed drafts and previous answers were kept.' }) }
+            else { Set-PilotFeedback $result.Error -ErrorState }
+            Write-PilotLog ('{0} ended: {1}. {2}' -f $operation.Mode, $result.Status, (Format-PilotUsage $result.Usage))
+        }
+    }
+    catch { Set-PilotFeedback ('Request failed: ' + $_.Exception.Message) -ErrorState }
+    finally {
+        $operation.Worker.Dispose(); $operation.Cancellation.Dispose()
+        $script:Operation = $null
+        Set-PilotBusy $false
+        if ($script:SettingsContext) { Set-PilotSettingsBusy $false }
+    }
+}
+
+function Stop-PilotBackground {
+    param([switch]$KeepDraft)
+    if (-not $script:Operation) { return }
+    $script:Operation.KeepDraft = $KeepDraft.IsPresent
+    $script:Operation.Cancellation.Cancel()
+    Set-PilotFeedback 'Cancelling the active request...'
+    Write-PilotLog 'Cancellation requested by user.'
+}
+
+function Start-PilotUiRun {
+    Sync-PilotSessionFromUi -ValidateRunLimits
+    if ($script:Session.Mode -eq 'Refine' -and ($script:Session.Revisions.Count + $script:Session.Iterations) -gt 100) { throw 'This session would exceed 100 revisions. Export it and start a new session before refining again.' }
+    $provider = (Get-PilotProviders)[$script:Session.ProviderName]
+    $key = Get-PilotUiCredential $provider.Name
+    $pricing = Get-PilotPricing $provider.Name $script:Session.Model $script:Preferences.PricingOverrides
+    if (-not $pricing.Known) { throw 'Set model-specific prices in provider settings before running. Unknown prices cannot enforce a run budget.' }
+    $prompt = $script:Session.BasePrompt
+    if ($script:Session.Mode -eq 'Answer' -and $script:Session.AnswerSource -eq 'Draft') {
+        $prompt = $script:Session.FinalPrompt
+        if (-not $prompt) { throw 'Refine a prompt first, or choose Original request as the answer input.' }
+    }
+    if ([string]::IsNullOrWhiteSpace($prompt)) { throw 'Write a request before running.' }
+    if ($script:Session.IncludeFile) { Update-PilotAttachmentPreview; if (-not $script:Controls.IncludeFileCheckBox.IsChecked) { throw 'Review the selected reference file before continuing.' } }
+    $options = @{ Prompt = $prompt; Context = $script:Session.ProjectContext; Goals = $script:Session.Goals; Model = $script:Session.Model; Iterations = $script:Session.Iterations; MaxOutputTokens = $script:Session.MaxOutputTokens; BudgetUsd = $script:Session.BudgetUsd; Profile = $script:Session.Profile; FilePath = $script:Session.FilePath; IncludeFile = $script:Session.IncludeFile; Pricing = $pricing }
+    Save-PilotAutosave
+    Start-PilotBackground $script:Session.Mode $options $provider $key
+    Set-PilotFeedback ('Running {0} with {1}. You can cancel the active request.' -f $script:Session.Mode.ToLowerInvariant(), $provider.DisplayName)
+}
+
+function Save-PilotSessionAs {
+    Sync-PilotSessionFromUi
+    $dialog = [Microsoft.Win32.SaveFileDialog]::new()
+    $dialog.Title = 'Save Prompt Pilot session'
+    $dialog.Filter = 'Prompt Pilot session (*.json)|*.json'
+    $dialog.FileName = 'prompt-pilot-session.json'
+    if ($dialog.ShowDialog($script:Window)) { Save-PilotSession $dialog.FileName $script:Session; $script:Dirty = $false; Set-PilotFeedback 'Session saved. It includes your prompts and results, without API keys.'; return $true }
+    return $false
+}
+
+function Confirm-PilotSessionChange {
+    if ($script:Preferences.Autosave) { Save-PilotAutosave; return $true }
+    if (-not $script:Dirty) { return $true }
+    $choice = [Windows.MessageBox]::Show($script:Window, 'Save this session before starting or opening another?', 'Unsaved session', [Windows.MessageBoxButton]::YesNoCancel, [Windows.MessageBoxImage]::Question)
+    if ($choice -eq 'Cancel') { return $false }
+    if ($choice -eq 'Yes') { return Save-PilotSessionAs }
+    return $true
+}
+
+function New-PilotUiSession {
+    if (-not (Confirm-PilotSessionChange)) { return }
+    $provider = $script:Session.ProviderName
+    Load-PilotUiSession (New-PilotSession $provider $script:Session.Model)
+    $script:Controls.UsageTextBlock.Text = 'No requests yet'
+    Set-PilotFeedback 'Write a request or choose an example to get started.'
+}
+
+function Open-PilotUiSession {
+    if (-not (Confirm-PilotSessionChange)) { return }
+    $dialog = [Microsoft.Win32.OpenFileDialog]::new()
+    $dialog.Title = 'Open saved session'
+    $dialog.Filter = 'Prompt Pilot sessions and legacy presets (*.json)|*.json'
+    if (Test-Path -LiteralPath $script:SessionsDirectory) { $dialog.InitialDirectory = $script:SessionsDirectory }
+    if ($dialog.ShowDialog($script:Window)) {
+        $raw = Read-PilotJson $dialog.FileName
+        if (Get-PilotValue $raw 'SchemaVersion') { $session = Read-PilotSession $dialog.FileName }
+        else {
+            $session = New-PilotSession $script:Session.ProviderName $script:Session.Model
+            $session.Model = Resolve-PilotModel $session.ProviderName ([string](Get-PilotValue $raw 'Model' $session.Model))
+            $session.Goals = [string](Get-PilotValue $raw 'Goals' (Get-PilotValue $raw 'RefinementGoals' $session.Goals))
+            $session.ProjectContext = [string](Get-PilotValue $raw 'ProjectContext' '')
+            $session.Iterations = [int](Get-PilotValue $raw 'Iterations' 2)
+            if (-not (Get-PilotValue $raw 'Model') -and -not (Get-PilotValue $raw 'Goals')) { throw 'This is not a Prompt Pilot session or supported legacy preset.' }
+        }
+        Load-PilotUiSession $session
+        Mark-PilotDirty
+        Save-PilotAutosave
+        Set-PilotFeedback 'Session opened. Review the provider and reference file before running.'
+    }
+}
+
+function Export-PilotUiSession {
+    Sync-PilotSessionFromUi
+    $dialog = [Microsoft.Win32.SaveFileDialog]::new()
+    $dialog.Title = 'Export session as Markdown'
+    $dialog.Filter = 'Markdown (*.md)|*.md'
+    $dialog.FileName = 'prompt-pilot-session.md'
+    if ($dialog.ShowDialog($script:Window)) { [IO.File]::WriteAllText($dialog.FileName, (Export-PilotMarkdown $script:Session), [Text.UTF8Encoding]::new($false)); Set-PilotFeedback 'Markdown exported with the original request, revisions and answer.' }
+}
+
+function Set-PilotSettingsBusy {
+    param([bool]$Busy)
+    if (-not $script:SettingsContext) { return }
+    $s = $script:SettingsContext
+    foreach ($control in @($s.Provider, $s.Model, $s.Key, $s.Remember, $s.Custom, $s.Save, $s.Refresh, $s.Test, $s.Forget)) { $control.IsEnabled = -not $Busy }
+    $s.Input.IsEnabled = (-not $Busy -and $s.Custom.IsChecked)
+    $s.Output.IsEnabled = (-not $Busy -and $s.Custom.IsChecked)
+    $s.Cancel.IsEnabled = $Busy
+}
+
+function Update-PilotSettingsPricing {
+    if (-not $script:SettingsContext) { return }
+    $s = $script:SettingsContext
+    try {
+        $pricing = Get-PilotPricing ([string]$s.Provider.SelectedItem.Key) $s.Model.Text $script:Preferences.PricingOverrides
+        $s.Custom.IsChecked = $pricing.IsCustom
+        $s.Input.Text = if ($pricing.Known) { $pricing.InputPerMillion.ToString('0.######', [Globalization.CultureInfo]::InvariantCulture) } else { '' }
+        $s.Output.Text = if ($pricing.Known) { $pricing.OutputPerMillion.ToString('0.######', [Globalization.CultureInfo]::InvariantCulture) } else { '' }
+        $s.PriceInfo.Text = $pricing.Source + ' | Checked: ' + $pricing.CheckedOn
+        Set-PilotSettingsBusy ([bool]$script:Operation)
+    }
+    catch { $s.PriceInfo.Text = $_.Exception.Message }
+}
+
+function Get-PilotSettingsRates {
+    $s = $script:SettingsContext
+    $name = [string]$s.Provider.SelectedItem.Key
+    $model = Resolve-PilotModel $name $s.Model.Text
+    $overrides = $script:Preferences.PricingOverrides.Clone()
+    if ($s.Custom.IsChecked) {
+        $inputRate = 0.0; $outputRate = 0.0
+        if (-not [double]::TryParse($s.Input.Text, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$inputRate) -or -not [double]::TryParse($s.Output.Text, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$outputRate)) { throw 'Enter custom input and output prices in USD per one million tokens.' }
+        $overrides["$name/$model"] = @{ InputPerMillion = $inputRate; OutputPerMillion = $outputRate; CheckedOn = (Get-Date -Format 'yyyy-MM-dd') }
+    }
+    else { $overrides.Remove("$name/$model") }
+    return @{ Pricing = Get-PilotPricing $name $model $overrides; Overrides = $overrides; Model = $model; ProviderName = $name }
+}
+
+function Complete-PilotSettingsOperation {
+    param($Operation, $Result)
+    if (-not $script:SettingsContext) { return }
+    $s = $script:SettingsContext
+    if ($Result.Status -eq 'Completed') {
+        if ($Operation.Mode -eq 'Models') {
+            $selected = $s.Model.Text
+            $s.Model.Items.Clear()
+            foreach ($model in @($Result.Models)) { $null = $s.Model.Items.Add([string]$model.Id) }
+            $s.Model.Text = $selected
+            $s.Status.Text = '{0} model IDs loaded. Choose a text-chat model; listing alone does not test generation.' -f @($Result.Models).Count
+        }
+        else { $s.Status.Text = 'Test passed: the selected model returned PROMPT_PILOT_OK. ' + (Format-PilotUsage $Result.Usage) }
+        $s.Status.Foreground = [Windows.Media.Brushes]::DarkGreen
     }
     else {
-        $null
-    }
-    $previousProviderSettings = if ($previousProviderName) {
-        Get-ProviderRuntimeSettings -ProviderName $previousProviderName
-    }
-    else {
-        $null
-    }
-    $nextProviderSettings = Get-ProviderRuntimeSettings -ProviderName $ProviderName
-
-    $script:ActiveProvider = $ProviderName
-
-    if ($script:ModelTextBox) {
-        $shouldUpdateModel = [string]::IsNullOrWhiteSpace($script:ModelTextBox.Text)
-        if (-not $shouldUpdateModel -and $previousProviderSettings) {
-            $shouldUpdateModel = ($script:ModelTextBox.Text -eq [string]$previousProviderSettings.Model)
-        }
-
-        if ($shouldUpdateModel) {
-            $script:ModelTextBox.Text = [string]$nextProviderSettings.Model
-        }
-    }
-
-    Update-ProviderIndicator
-
-    if (-not $SkipSave) {
-        Save-ProviderSettings
+        $s.Status.Text = $Result.Error
+        $s.Status.Foreground = [Windows.Media.Brushes]::Firebrick
     }
 }
 
-function Set-BusyState {
-    <#
-    .SYNOPSIS
-        Toggles the busy/idle UI state: wait cursor, busy indicator visibility,
-        button enable states, and the cancellation flag reset.
-    #>
-    param(
-        [bool]$IsBusy,
-        [string]$Message = $null
-    )
-
-    if ($script:BusyIndicatorTextBlock) {
-        $script:BusyIndicatorTextBlock.Visibility = if ($IsBusy) { 'Visible' } else { 'Collapsed' }
-    }
-
-    $window.Cursor = if ($IsBusy) { [System.Windows.Input.Cursors]::Wait } else { [System.Windows.Input.Cursors]::Arrow }
-
-    # These buttons are DISABLED while a run is in progress
-    foreach ($btn in @(
-        $script:RunButton,
-        $script:BrowseButton,
-        $script:CopyButton,
-        $script:UsePromptButton,
-        $script:CopyTaskOutputButton,
-        $script:ModeRefineRadio,
-        $script:ModeAnswerRadio,
-        $script:ClearLogButton,
-        $script:SavePresetButton,
-        $script:LoadPresetButton,
-        $script:ClearSessionKeyButton
-    )) {
-        if ($btn) { $btn.IsEnabled = -not $IsBusy }
-    }
-
-    # [3][4] Cancel and AcceptIteration are ENABLED during a run, disabled when idle
-    if ($script:CancelButton)          { $script:CancelButton.IsEnabled          = $IsBusy }
-    if ($script:AcceptIterationButton) { $script:AcceptIterationButton.IsEnabled = $IsBusy }
-
-    # [3] Reset the flag when returning to idle so the next run starts clean
-    if (-not $IsBusy) {
-        $script:CancelRequested = $false
-    }
-
-    if ($Message) {
-        Append-Log -Message $Message
-    }
-}
-
-# =============================================================================
-# [9] API key resolution — never exposes key values in logs or UI
-# =============================================================================
-
-function Get-ApiKey {
-    <#
-    .SYNOPSIS
-        Returns the active provider API key using the following priority:
-          1. Session key           (set interactively this session)
-          2. Saved settings key    (stored securely for the current Windows user)
-          3. Provider environment variable(s)
-          4. A WPF PasswordBox modal prompt (stored as a session key, never persisted)
-    #>
-    param(
-        [string]$ProviderName = $script:ActiveProvider
-    )
-
-    $provider = Get-ProviderDefinition -ProviderName $ProviderName
-
-    if ($script:SessionApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SessionApiKeys[$ProviderName])) {
-        return $script:SessionApiKeys[$ProviderName]
-    }
-
-    if ($script:SavedApiKeys.ContainsKey($ProviderName) -and -not [string]::IsNullOrWhiteSpace($script:SavedApiKeys[$ProviderName])) {
-        return $script:SavedApiKeys[$ProviderName]
-    }
-
-    $environmentKey = Get-EnvironmentProviderKey -ProviderName $ProviderName
-    if ($environmentKey) {
-        return $environmentKey
-    }
-
-    # Neither source is available — show a modal WPF PasswordBox dialog
-    $inputXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="API Key Required" Width="440" Height="170"
-        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
-        ShowInTaskbar="False">
-    <StackPanel Margin="14">
-        <TextBlock TextWrapping="Wrap" Margin="0,0,0,10"
-                   Text="Enter the API key for this provider. It will be kept in memory for this session only and will not be written to disk or to any environment variable." />
-        <PasswordBox Name="KeyBox" Margin="0,0,0,10" />
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Name="OkBtn"     Content="OK"     Padding="24,4" Margin="0,0,8,0" IsDefault="True" />
-            <Button Name="CancelBtn" Content="Cancel" Padding="24,4" IsCancel="True" />
-        </StackPanel>
-    </StackPanel>
+function Show-PilotSettings {
+    if ($script:Operation) { Set-PilotFeedback 'Finish or cancel the running request before changing providers.'; return }
+    [xml]$markup = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Prompt Pilot - Providers and API keys" Width="610" Height="700" MinHeight="650" WindowStartupLocation="CenterOwner" ResizeMode="CanResize" Background="#F4F6FB" FontFamily="Segoe UI" FontSize="13">
+ <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="22">
+  <TextBlock Text="Connect your model provider" FontSize="21" FontWeight="SemiBold" Foreground="#172554" Margin="0,0,0,5" />
+  <TextBlock Text="Your keys stay on this PC. A provider API account is separate from a chat subscription." TextWrapping="Wrap" Foreground="#64748B" Margin="0,0,0,16" />
+  <TextBlock Text="Provider" /><ComboBox Name="ProviderComboBox" DisplayMemberPath="Title" Padding="6" Margin="0,5,0,12" />
+  <TextBlock Text="Model ID" /><Grid Margin="0,5,0,5"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+   <ComboBox Name="ModelComboBox" IsEditable="True" Padding="6" /><Button Name="RefreshModelsButton" Grid.Column="1" Content="Load models" Padding="12,6" Margin="8,0,0,0" />
+  </Grid>
+  <TextBlock Name="CredentialStatusTextBlock" TextWrapping="Wrap" Foreground="#64748B" Margin="0,0,0,12" />
+  <TextBlock Text="API key / GitHub Models token (blank keeps the current key)" /><PasswordBox Name="KeyBox" Padding="7" Margin="0,5,0,6" />
+  <CheckBox Name="RememberKeyCheckBox" Content="Save a new key for this Windows user (encrypted)" IsChecked="True" Margin="0,0,0,10" />
+  <Button Name="ForgetKeyButton" Content="Forget this provider's stored/session key" HorizontalAlignment="Left" Padding="10,5" Margin="0,0,0,16" />
+  <CheckBox Name="CustomPricingCheckBox" Content="Use custom token prices (USD per 1 million tokens)" Margin="0,0,0,7" />
+  <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+   <StackPanel Margin="0,0,10,0"><TextBlock Text="Input price" /><TextBox Name="InputPriceBox" Padding="7" Margin="0,4,0,0" /></StackPanel>
+   <StackPanel Grid.Column="1"><TextBlock Text="Output price" /><TextBox Name="OutputPriceBox" Padding="7" Margin="0,4,0,0" /></StackPanel>
+  </Grid>
+  <TextBlock Name="PricingInfoTextBlock" TextWrapping="Wrap" Foreground="#64748B" FontSize="11" Margin="0,6,0,16" />
+  <StackPanel Orientation="Horizontal"><Button Name="TestRequestButton" Content="Test a short request" Padding="12,7" /><Button Name="CancelRequestButton" Content="Cancel test" Padding="12,7" Margin="8,0,0,0" IsEnabled="False" /></StackPanel>
+  <TextBlock Text="The test sends a short generation request using API credits, capped at 1,024 output tokens and a $0.10 run budget. Model listing sends no prompt." TextWrapping="Wrap" Foreground="#64748B" FontSize="11" Margin="0,6,0,8" />
+  <TextBlock Name="StatusTextBlock" TextWrapping="Wrap" MinHeight="52" Margin="0,0,0,12" />
+  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="SaveButton" Content="Save and use provider" Padding="14,8" Margin="0,0,8,0" /><Button Name="CloseButton" Content="Close" Padding="14,8" /></StackPanel>
+ </StackPanel></ScrollViewer>
 </Window>
 '@
-
-    $inputReader = New-Object System.Xml.XmlNodeReader ([xml]$inputXaml)
-    $inputDialog = [Windows.Markup.XamlReader]::Load($inputReader)
-    $keyBox      = $inputDialog.FindName('KeyBox')
-    $okBtn       = $inputDialog.FindName('OkBtn')
-    $cancelBtn   = $inputDialog.FindName('CancelBtn')
-
-    $okBtn.Add_Click({
-        $inputDialog.DialogResult = $true
-        $inputDialog.Close()
+    $dialog = [Windows.Markup.XamlReader]::Load([Xml.XmlNodeReader]::new($markup))
+    $dialog.Owner = $script:Window
+    $script:SettingsContext = @{ Dialog = $dialog; Provider = $dialog.FindName('ProviderComboBox'); Model = $dialog.FindName('ModelComboBox'); Key = $dialog.FindName('KeyBox'); Remember = $dialog.FindName('RememberKeyCheckBox'); Forget = $dialog.FindName('ForgetKeyButton'); Custom = $dialog.FindName('CustomPricingCheckBox'); Input = $dialog.FindName('InputPriceBox'); Output = $dialog.FindName('OutputPriceBox'); PriceInfo = $dialog.FindName('PricingInfoTextBlock'); Status = $dialog.FindName('StatusTextBlock'); CredentialStatus = $dialog.FindName('CredentialStatusTextBlock'); Refresh = $dialog.FindName('RefreshModelsButton'); Test = $dialog.FindName('TestRequestButton'); Cancel = $dialog.FindName('CancelRequestButton'); Save = $dialog.FindName('SaveButton'); Close = $dialog.FindName('CloseButton') }
+    $s = $script:SettingsContext
+    foreach ($provider in (Get-PilotProviders).Values) { $null = $s.Provider.Items.Add([pscustomobject]@{ Key = $provider.Name; Title = $provider.DisplayName }) }
+    $s.Provider.Add_SelectionChanged({
+        $s = $script:SettingsContext
+        if (-not $s -or -not $s.Provider.SelectedItem) { return }
+        $name = [string]$s.Provider.SelectedItem.Key
+        $s.Model.Items.Clear(); $s.Model.Text = $script:Preferences.Providers[$name].Model; $s.Key.Clear()
+        try { $source = (Get-PilotCredential $name $script:Preferences $script:SessionKeys).Source } catch { $source = 'saved key unavailable; enter a replacement' }
+        $s.CredentialStatus.Text = 'Credential: ' + $source + $(if ($name -eq 'GitHubModels') { '. Use a GitHub Models token with Models access; Copilot subscriptions do not supply this API.' } else { '' })
+        Update-PilotSettingsPricing
     })
-    $cancelBtn.Add_Click({
-        $inputDialog.DialogResult = $false
-        $inputDialog.Close()
-    })
-
-    $inputDialog.Title = "API Key Required - $($provider.DisplayName)"
-    $inputDialog.Owner = $window
-    $dialogResult = $inputDialog.ShowDialog()
-
-    if ($dialogResult -ne $true -or [string]::IsNullOrWhiteSpace($keyBox.Password)) {
-        throw "No API key provided. Operation cancelled."
-    }
-
-    $script:SessionApiKeys[$ProviderName] = $keyBox.Password
-    Append-Log -Message ("Session API key accepted for {0} (stored in memory only — not persisted)." -f $provider.DisplayName)
-    Update-ProviderIndicator
-    return $script:SessionApiKeys[$ProviderName]
-}
-
-function Invoke-ProviderChatRequest {
-    param(
-        [Parameter(Mandatory)][string]$ProviderName,
-        [Parameter(Mandatory)][string]$ApiKey,
-        [Parameter(Mandatory)][string]$Model,
-        [Parameter()][string]$SystemMessage = '',
-        [Parameter(Mandatory)][array]$Messages,
-        [int]$MaxTokens = 4096
-    )
-
-    $provider = Get-ProviderDefinition -ProviderName $ProviderName
-    $endpoint = "{0}/{1}" -f $provider.ApiBase.TrimEnd('/'), $provider.ChatEndpointPath.TrimStart('/')
-
-    switch ($provider.Protocol) {
-        'Anthropic' {
-            $headers = @{
-                'x-api-key'         = $ApiKey
-                'anthropic-version' = '2023-06-01'
-                'content-type'      = 'application/json'
-            }
-
-            $body = @{
-                model      = $Model
-                max_tokens = $MaxTokens
-                messages   = @(
-                    foreach ($message in $Messages) {
-                        @{
-                            role    = $message.role
-                            content = @(
-                                @{
-                                    type = 'text'
-                                    text = [string]$message.content
-                                }
-                            )
-                        }
-                    }
-                )
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($SystemMessage)) {
-                $body.system = $SystemMessage
-            }
-
-            $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body ($body | ConvertTo-Json -Depth 10) -TimeoutSec 120
-
-            $responseText = @(
-                foreach ($part in $response.content) {
-                    if ($part.type -eq 'text') {
-                        $part.text
-                    }
-                }
-            ) -join "`n"
-
-            return [pscustomobject]@{
-                Text             = $responseText
-                PromptTokens     = [int]($response.usage.input_tokens)
-                CompletionTokens = [int]($response.usage.output_tokens)
-            }
-        }
-        default {
-            $headers = @{
-                'Authorization' = "Bearer $ApiKey"
-                'Content-Type'  = 'application/json'
-            }
-
-            $allMessages = @()
-            if (-not [string]::IsNullOrWhiteSpace($SystemMessage)) {
-                $allMessages += @{ role = 'system'; content = $SystemMessage }
-            }
-            $allMessages += $Messages
-
-            $body = @{
-                model    = $Model
-                messages = $allMessages
-            } | ConvertTo-Json -Depth 10
-
-            $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body $body -TimeoutSec 120
-
-            return [pscustomobject]@{
-                Text             = $response.choices[0].message.content
-                PromptTokens     = [int]($response.usage.prompt_tokens)
-                CompletionTokens = [int]($response.usage.completion_tokens)
-            }
-        }
-    }
-}
-
-# =============================================================================
-# [5] Token estimation helper
-# =============================================================================
-
-function Get-TokenEstimate {
-    <#
-    .SYNOPSIS
-        Returns a rough token count using the heuristic: ceiling(characters / 4).
-    #>
-    param([string]$Text)
-    return [int]([Math]::Ceiling($Text.Length / 4))
-}
-
-# =============================================================================
-# [2] Retry helper with exponential backoff
-# =============================================================================
-
-function Invoke-WithRetry {
-    <#
-    .SYNOPSIS
-        Executes a ScriptBlock and retries on transient HTTP errors (429, 502, 503, 504)
-        and network timeouts, using exponential backoff capped at 30 seconds.
-        All other errors are re-thrown immediately.
-    #>
-    param(
-        [Parameter(Mandatory)][ScriptBlock]$Action,
-        [int]$MaxRetries  = 3,
-        [int]$BaseDelayMs = 500
-    )
-
-    $retryableStatusCodes = @(429, 502, 503, 504)
-    $attempt = 0
-
-    while ($true) {
+    foreach ($item in $s.Provider.Items) { if ($item.Key -eq $script:Session.ProviderName) { $s.Provider.SelectedItem = $item; break } }
+    $s.Model.Add_SelectionChanged({ if ($script:SettingsContext -and $script:SettingsContext.Model.SelectedItem) { $script:SettingsContext.Model.Text = [string]$script:SettingsContext.Model.SelectedItem; Update-PilotSettingsPricing } })
+    $s.Model.Add_LostKeyboardFocus({ Update-PilotSettingsPricing })
+    $s.Custom.Add_Checked({ if ($script:SettingsContext) { $script:SettingsContext.Input.IsEnabled = $true; $script:SettingsContext.Output.IsEnabled = $true } })
+    $s.Custom.Add_Unchecked({ if ($script:SettingsContext) { $script:SettingsContext.Input.IsEnabled = $false; $script:SettingsContext.Output.IsEnabled = $false } })
+    $s.Refresh.Add_Click({
         try {
-            return & $Action
+            $s = $script:SettingsContext; $name = [string]$s.Provider.SelectedItem.Key
+            $key = Get-PilotUiCredential $name $s.Key.Password
+            Start-PilotBackground Models @{} (Get-PilotProviders)[$name] $key Settings
+            $s.Status.Text = 'Loading available model IDs...'
         }
-        catch {
-            $statusCode = $null
-            $isTimeout  = $false
-
-            # PS 5.1 — System.Net.WebException
-            if ($_.Exception -is [System.Net.WebException]) {
-                if ($_.Exception.Response) {
-                    try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
-                }
-                if ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::Timeout) {
-                    $isTimeout = $true
-                }
-            }
-            # PS 6+ — HttpResponseException carries the status code differently
-            elseif ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-                try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
-            }
-
-            # PS 6+ timeout surfaces as OperationCanceledException
-            if ($_.Exception -is [System.OperationCanceledException])                        { $isTimeout = $true }
-            if ($_.Exception.InnerException -is [System.OperationCanceledException])          { $isTimeout = $true }
-
-            $isRetryable = $isTimeout -or ($statusCode -and ($retryableStatusCodes -contains $statusCode))
-
-            if (-not $isRetryable -or $attempt -ge $MaxRetries) {
-                throw
-            }
-
-            $attempt++
-            $rawDelay = [int]([Math]::Pow(2, $attempt) * $BaseDelayMs)
-            $delayMs  = if ($rawDelay -gt 30000) { 30000 } else { $rawDelay }
-
-            $statusMsg = if ($statusCode) { "HTTP $statusCode" } elseif ($isTimeout) { "network timeout" } else { "transient error" }
-            Append-Log -Message ("Retry {0}/{1} after {2} — waiting {3} ms..." -f $attempt, $MaxRetries, $statusMsg, $delayMs)
-            Start-Sleep -Milliseconds $delayMs
+        catch { $script:SettingsContext.Status.Text = $_.Exception.Message }
+    })
+    $s.Test.Add_Click({
+        try {
+            $s = $script:SettingsContext; $rates = Get-PilotSettingsRates
+            if (-not $rates.Pricing.Known) { throw 'Set explicit custom prices before running a test with this model.' }
+            $key = Get-PilotUiCredential $rates.ProviderName $s.Key.Password
+            $options = @{ Model = $rates.Model; Pricing = $rates.Pricing; BudgetUsd = 0.10; MaxOutputTokens = 1024; Iterations = 1 }
+            Start-PilotBackground Test $options (Get-PilotProviders)[$rates.ProviderName] $key Settings
+            $s.Status.Text = 'Testing a real generation request...'
         }
-    }
+        catch { $script:SettingsContext.Status.Text = $_.Exception.Message }
+    })
+    $s.Cancel.Add_Click({ Stop-PilotBackground })
+    $s.Forget.Add_Click({
+        try {
+            $s = $script:SettingsContext; $name = [string]$s.Provider.SelectedItem.Key
+            $script:Preferences.Keys.Remove($name); $script:SessionKeys.Remove($name); $s.Key.Clear()
+            Save-PilotUiPreferences
+            $s.Status.Text = 'Stored and session keys removed. Any provider environment variable remains available.'
+            Update-PilotProviderUi
+        }
+        catch { $script:SettingsContext.Status.Text = $_.Exception.Message }
+    })
+    $s.Save.Add_Click({
+        try {
+            $s = $script:SettingsContext; $rates = Get-PilotSettingsRates
+            $script:Preferences.PricingOverrides = $rates.Overrides
+            $script:Preferences.Providers[$rates.ProviderName].Model = $rates.Model
+            $script:Preferences.ActiveProvider = $rates.ProviderName
+            if ($s.Key.Password) {
+                if ($s.Remember.IsChecked) { $script:Preferences.Keys[$rates.ProviderName] = Protect-PilotSecret $s.Key.Password; $script:SessionKeys.Remove($rates.ProviderName) }
+                else { $script:SessionKeys[$rates.ProviderName] = $s.Key.Password }
+                if ($s.Key.Password -notin $script:KnownSecrets) { $script:KnownSecrets += $s.Key.Password }
+            }
+            Save-PilotUiPreferences
+            $script:Session.ProviderName = $rates.ProviderName; $script:Session.Model = $rates.Model
+            Update-PilotProviderUi; Mark-PilotDirty
+            $s.Dialog.Close()
+            Set-PilotFeedback 'Provider saved. Write your request, then refine or get an answer.'
+        }
+        catch { $script:SettingsContext.Status.Text = $_.Exception.Message }
+    })
+    $s.Close.Add_Click({ $script:SettingsContext.Dialog.Close() })
+    $dialog.Add_Closing({ if ($script:Operation -and $script:Operation.Target -eq 'Settings') { Stop-PilotBackground } })
+    $null = $dialog.ShowDialog()
+    $script:SettingsContext = $null
 }
 
-# =============================================================================
-# Core API functions
-# =============================================================================
-
-function Invoke-OpenAIRefinement {
-    <#
-    .SYNOPSIS
-        Iteratively refines a prompt using the OpenAI Chat Completions API.
-
-    .DESCRIPTION
-        Sends the current draft through multiple refinement iterations, each time
-        transforming it into a more structured, production-grade task description.
-        Supports pre-run cost confirmation, per-iteration UI updates, and cancellation.
-        Returns $null if the user declines the cost confirmation prompt.
-
-    .OUTPUTS
-        [pscustomobject] with FinalPrompt, Iterations, TotalTokens, TotalInputTokens,
-        TotalOutputTokens, TotalCostUsd — or $null when cancelled before the loop starts.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$BasePrompt,
-        [Parameter()][string]$RefinementGoals = '',
-        [Parameter()][string]$FilePath        = '',
-        [Parameter()][int]$Iterations         = $script:DefaultIterations,
-        [Parameter()][string]$Model           = $script:DefaultModel,
-        [Parameter()][string]$ProjectContext  = ''
-    )
-
-    $provider = Get-ProviderDefinition
-    $providerSettings = Get-ProviderRuntimeSettings
-
-    # [9] Resolve API key (may show interactive prompt)
-    $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
-
-    # [8] Input length validation
-    if ($BasePrompt.Length -gt 32000) {
-        throw ("BasePrompt is too long ({0} characters). Maximum is 32,000 characters." -f $BasePrompt.Length)
-    }
-
-    if ($Iterations -lt 1) { $Iterations = 1 }
-
-    # [8] File path validation — validate existence and size before use
-    $effectiveFilePath = ''
-    if (-not [string]::IsNullOrWhiteSpace($FilePath)) {
-        if (-not (Test-Path -LiteralPath $FilePath)) {
-            Append-Log -Message "WARNING: File not found — omitting file reference: $FilePath"
-        }
-        else {
-            $fileSize = (Get-Item -LiteralPath $FilePath).Length
-            if ($fileSize -gt (512 * 1024)) {
-                Append-Log -Message ("WARNING: File exceeds 512 KB ({0} bytes) — omitting file reference." -f $fileSize)
-            }
-            else {
-                $effectiveFilePath = $FilePath
-            }
-        }
-    }
-
-    $currentDraft      = $BasePrompt
-    $iterationResults  = @()
-    $totalInputTokens  = 0
-    $totalOutputTokens = 0
-
-    # Fixed system prompt for the Prompt Pilot role
-    $systemInstructions = @"
-You are a senior prompt architect for coding assistants (e.g., GitHub Copilot, Claude, ChatGPT Code).
-Your job is to transform rough, underspecified user prompts into high-quality, production-grade task
-descriptions that coding agents can execute reliably.
-
-Always:
-- Preserve the user's core intent.
-- Clarify role, goals, inputs, outputs, and constraints.
-- Add structure that makes it easy for the coding agent to follow (headings, bullet points, clear sections).
-- Avoid adding fictional requirements; only infer what is strongly implied by the user's text.
-
-Assume the user is a technically proficient engineer working on PowerShell-first automation projects of a variety of types.
-Prefer precise, direct language over marketing fluff.
-"@
-
-    $defaultProjectContext = @"
-Project context (for reference while refining the prompt):
-
-- The user is a senior cloud engineer comfortable with PowerShell, .NET, and basic web dev.
-- The codebase should prioritize robustness, maintainability, and observability over clever tricks.
-- Inline comments and clear structure are more important than terseness.
-- Write-Host is available for console output, and the user can run scripts in a home-lab environment with typical permissions.
-
-Use this context to make the refined prompts more concrete and useful, but do not restate it verbatim unless it helps clarify the user's intent.
-"@
-
-    $effectiveProjectContext = if ($ProjectContext) { $ProjectContext } else { $defaultProjectContext }
-
-    # [5] Pre-run token estimate and cost confirmation
-    $sampleUserContent     = $effectiveProjectContext + $currentDraft + $RefinementGoals + $effectiveFilePath
-    $estimatedInputPerIter = (Get-TokenEstimate -Text $systemInstructions) + (Get-TokenEstimate -Text $sampleUserContent)
-    $estimatedTotalTokens  = $estimatedInputPerIter * $Iterations * 2   # x2 approximates output volume
-    $estimatedCost         = (($estimatedInputPerIter * $Iterations / 1000.0) * [double]$providerSettings.PricePer1kInputTokens) +
-                             (($estimatedInputPerIter * $Iterations / 1000.0) * [double]$providerSettings.PricePer1kOutputTokens)
-
-    if ($estimatedCost -gt 0.05) {
-        $confirmMsg = (
-            "The estimated cost for this refinement run exceeds `$0.05.`n`n" +
-            "  Iterations  : {0}`n" +
-            "  Est. tokens : {1}`n" +
-            "  Est. cost   : `${2:F6}`n`n" +
-            "Proceed?"
-        ) -f $Iterations, $estimatedTotalTokens, $estimatedCost
-
-        $choice = [System.Windows.MessageBox]::Show(
-            $confirmMsg,
-            "Cost Confirmation",
-            [System.Windows.MessageBoxButton]::YesNo,
-            [System.Windows.MessageBoxImage]::Question
-        )
-
-        if ($choice -ne [System.Windows.MessageBoxResult]::Yes) {
-            Append-Log -Message ("Refinement cancelled — estimated cost `${0:F6} exceeded `$0.05 threshold." -f $estimatedCost)
-            return $null
-        }
-    }
-
-    for ($i = 1; $i -le $Iterations; $i++) {
-
-        # [3] Check for cancellation before starting each iteration
-        if ($script:CancelRequested) {
-            Append-Log -Message ("Refinement cancelled by user before iteration {0}." -f $i)
-            break
-        }
-
-        $userContent = @"
-$effectiveProjectContext
-
-You are refining a rough prompt that will be sent to a coding assistant like GitHub Copilot.
-
-Original rough prompt:
----
-$currentDraft
----
-
-Transform this into a single, well-structured prompt with the following sections:
-
-1. Role: Describe who the coding assistant should act as.
-2. Goals: Bullet list of what the user is trying to achieve.
-3. Context: Any relevant background that will help (assume a PowerShell-first automation project if not specified).
-4. Deliverables: Exact formats or artifacts the coding assistant should produce.
-5. Constraints and style: Technical constraints (language, stack, performance, safety) and writing/style preferences if present or implied.
-
-Additional refinement goals (may be empty):
-$RefinementGoals
-
-If a file path is provided, assume the runtime system can handle uploads or references:
-$effectiveFilePath
-
-Output only the refined prompt, in well-formed Markdown, starting with a short one-line description and then the sections above.
-Do not include your own commentary or analysis, only the final prompt the user should copy/paste into their coding assistant.
-"@
-
-        $messages = @(
-            @{ role = 'user'; content = $userContent }
-        )
-
-        Show-Status -Message ("Calling {0} (iteration {1}/{2})..." -f $provider.DisplayName, $i, $Iterations)
-
-        # [2] Retry wrapper; [2] explicit timeout
-        $response = Invoke-WithRetry -Action {
-            Invoke-ProviderChatRequest `
-                -ProviderName  $script:ActiveProvider `
-                -ApiKey        $apiKey `
-                -Model         $Model `
-                -SystemMessage $systemInstructions `
-                -Messages      $messages `
-                -MaxTokens     4096
-        }
-
-        $text = $response.Text
-
-        if (-not $text) {
-            throw "No text content returned from $($provider.DisplayName) in iteration $i."
-        }
-
-        $currentDraft = $text.Trim()
-
-        # [4] Update FinalPromptTextBox after every iteration so AcceptIterationButton is useful
-        if ($script:FinalPromptTextBox) {
-            $script:FinalPromptTextBox.Text = $currentDraft
-        }
-
-        $totalInputTokens  += [int]$response.PromptTokens
-        $totalOutputTokens += [int]$response.CompletionTokens
-
-        $iterationResults += [pscustomobject]@{
-            Iteration = $i
-            Prompt    = $currentDraft
-        }
-
-        # [4] Per-iteration progress message
-        Show-Status -Message ("Iteration {0}/{1} complete." -f $i, $Iterations)
-
-        # Yield to the WPF dispatcher so Cancel/AcceptIteration clicks can register
-        # between API calls without requiring a background thread.
-        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
-            [Action]{},
-            [System.Windows.Threading.DispatcherPriority]::Background
-        )
-    }
-
-    $totalTokens = $totalInputTokens + $totalOutputTokens
-    $cost = 0.0
-    if ($totalTokens -gt 0) {
-        $cost = (($totalInputTokens  / 1000.0) * [double]$providerSettings.PricePer1kInputTokens) +
-            (($totalOutputTokens / 1000.0) * [double]$providerSettings.PricePer1kOutputTokens)
-    }
-
-    return [pscustomobject]@{
-        FinalPrompt       = $currentDraft
-        Iterations        = $iterationResults
-        TotalTokens       = $totalTokens
-        TotalInputTokens  = $totalInputTokens
-        TotalOutputTokens = $totalOutputTokens
-        TotalCostUsd      = [Math]::Round($cost, 6)
-    }
-}
-
-function Invoke-OpenAIAnswer {
-    <#
-    .SYNOPSIS
-        Executes a prompt (refined or raw) against the active provider API
-        and returns the response text with token usage and estimated cost.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Prompt,
-        [Parameter()][string]$FilePath = '',
-        [Parameter()][string]$Model    = $script:DefaultModel
-    )
-
-    $provider = Get-ProviderDefinition
-    $providerSettings = Get-ProviderRuntimeSettings
-
-    # [9] Resolve API key
-    $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
-
-    # [8] Input length validation
-    if ($Prompt.Length -gt 32000) {
-        throw ("Prompt is too long ({0} characters). Maximum is 32,000 characters." -f $Prompt.Length)
-    }
-
-    # [8] File path validation
-    $promptWithContext = $Prompt
-    if (-not [string]::IsNullOrWhiteSpace($FilePath)) {
-        if (-not (Test-Path -LiteralPath $FilePath)) {
-            Append-Log -Message "WARNING: File not found — omitting file reference: $FilePath"
-        }
-        else {
-            $fileSize = (Get-Item -LiteralPath $FilePath).Length
-            if ($fileSize -gt (512 * 1024)) {
-                Append-Log -Message ("WARNING: File exceeds 512 KB ({0} bytes) — omitting file reference." -f $fileSize)
-            }
-            else {
-                $promptWithContext = "$Prompt`n`nFile reference: $FilePath"
-            }
-        }
-    }
-
-    $messages = @(
-        @{ role = 'user'; content = $promptWithContext }
-    )
-
-    # [2] Retry wrapper with timeout
-    $response = Invoke-WithRetry -Action {
-        Invoke-ProviderChatRequest `
-            -ProviderName $script:ActiveProvider `
-            -ApiKey       $apiKey `
-            -Model        $Model `
-            -Messages     $messages `
-            -MaxTokens    4096
-    }
-
-    $text = $response.Text
-
-    if (-not $text) {
-        throw "No text content returned from $($provider.DisplayName) for task execution."
-    }
-
-    $totalInputTokens  = [int]$response.PromptTokens
-    $totalOutputTokens = [int]$response.CompletionTokens
-
-    $totalTokens = $totalInputTokens + $totalOutputTokens
-    $cost = 0.0
-    if ($totalTokens -gt 0) {
-        $cost = (($totalInputTokens  / 1000.0) * [double]$providerSettings.PricePer1kInputTokens) +
-            (($totalOutputTokens / 1000.0) * [double]$providerSettings.PricePer1kOutputTokens)
-    }
-
-    return [pscustomobject]@{
-        OutputText        = $text.Trim()
-        TotalTokens       = $totalTokens
-        TotalInputTokens  = $totalInputTokens
-        TotalOutputTokens = $totalOutputTokens
-        TotalCostUsd      = [Math]::Round($cost, 6)
-    }
-}
-
-function Show-TaskErrorDialog {
-    <#
-    .SYNOPSIS
-        Modal error dialog for a failed background task. Kept as its own
-        function so headless tests can override it instead of blocking on a
-        real MessageBox.
-    #>
+function Confirm-PilotDiscardAfterSaveFailure {
     param([string]$Message)
-
-    [System.Windows.MessageBox]::Show(
-        "Failed to run task: $Message",
-        "Error",
-        [System.Windows.MessageBoxButton]::OK,
-        [System.Windows.MessageBoxImage]::Error
-    ) | Out-Null
+    $detail = Protect-PilotText $Message $script:KnownSecrets
+    return ([Windows.MessageBox]::Show($script:Window, ($detail + "`n`nClose without saving the latest changes? Choose No to keep the window open and save or export to another location."), 'Unsaved changes', [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Warning, [Windows.MessageBoxResult]::No) -eq 'Yes')
 }
 
-function Complete-AnswerTask {
-    param(
-        [Parameter(Mandatory)][System.IAsyncResult]$Handle,
-        [Parameter(Mandatory)][System.Management.Automation.PowerShell]$PowerShellInstance
-    )
-
-    try {
-        $result = $PowerShellInstance.EndInvoke($Handle)
-        if ($result.Count -lt 1) {
-            throw "No response object returned for task execution."
-        }
-
-        $taskResult = $result[$result.Count - 1]
-        $script:TaskOutputTextBox.Text = [string]$taskResult.OutputText
-
-        if ($taskResult.Warnings) {
-            foreach ($warning in $taskResult.Warnings) {
-                Append-Log -Message ([string]$warning)
-            }
-        }
-
-        $usageText = "Tokens: {0} (in {1} / out {2}) | Cost: `${3}" -f `
-            $taskResult.TotalTokens, $taskResult.TotalInputTokens, $taskResult.TotalOutputTokens, $taskResult.TotalCostUsd
-        Show-Status -Message "Task complete." -Usage $usageText
-        Append-Log -Message ("Task complete. {0}" -f $usageText)
-    }
-    catch {
-        # [12] A stopped pipeline is the operator's Cancel, not an application
-        # error — report it as such and skip the error dialog.
-        if ($PowerShellInstance.InvocationStateInfo.State -eq 'Stopped') {
-            Show-Status -Message "Task cancelled."
-            Append-Log  -Message "Task cancelled by operator."
-        }
-        else {
-            $message = $_.Exception.Message
-            if ($PowerShellInstance.Streams.Error.Count -gt 0) {
-                $message = [string]$PowerShellInstance.Streams.Error[0]
-            }
-
-            Append-Log -Message ("Task failed: {0}" -f $message)
-            Show-Status -Message ("Task failed: {0}" -f $message)
-            Show-TaskErrorDialog -Message $message
-        }
-    }
-    finally {
-        Set-BusyState -IsBusy $false
-        $PowerShellInstance.Dispose()
-        $script:AnswerTaskState = $null
-    }
+function Invoke-PilotUiAction {
+    param([scriptblock]$Action)
+    try { & $Action } catch { Set-PilotFeedback $_.Exception.Message -ErrorState }
 }
 
-function Stop-AnswerTask {
-    <#
-    .SYNOPSIS
-        Requests cancellation of the running background answer task. Safe to
-        call when no task is running. UI cleanup happens in Complete-AnswerTask
-        when the poll timer observes the stopped pipeline.
-    #>
-    if (-not $script:AnswerTaskState) { return }
-
-    try {
-        $null = $script:AnswerTaskState.PowerShell.BeginStop($null, $null)
-        Show-Status -Message "Cancelling task..."
-        Append-Log  -Message "Cancel requested — stopping the background task."
-    }
-    catch {
-        Append-Log -Message ("Cancel request failed: {0}" -f $_.Exception.Message)
-    }
-}
-
-function Start-AnswerTask {
-    param(
-        [Parameter(Mandatory)][string]$Prompt,
-        [Parameter()][string]$FilePath = '',
-        [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$ProviderName,
-        [Parameter(Mandatory)][string]$ApiKey
-    )
-
-    if ($script:AnswerTaskState) {
-        throw "A task is already running."
-    }
-
-    $provider = Get-ProviderDefinition -ProviderName $ProviderName
-    $providerSettings = Get-ProviderRuntimeSettings -ProviderName $ProviderName
-
-    $backgroundScript = {
-        param($Prompt, $FilePath, $Model, $ProviderName, $Provider, $ProviderSettings, $ApiKey)
-
-        if ($Prompt.Length -gt 32000) {
-            throw ("Prompt is too long ({0} characters). Maximum is 32,000 characters." -f $Prompt.Length)
-        }
-
-        $promptWithContext = $Prompt
-        $warnings = [System.Collections.Generic.List[string]]::new()
-        if (-not [string]::IsNullOrWhiteSpace($FilePath)) {
-            if (-not (Test-Path -LiteralPath $FilePath)) {
-                $warnings.Add("WARNING: File not found — omitting file reference: $FilePath")
-            }
-            else {
-                $fileSize = (Get-Item -LiteralPath $FilePath).Length
-                if ($fileSize -gt (512 * 1024)) {
-                    $warnings.Add(("WARNING: File exceeds 512 KB ({0} bytes) — omitting file reference." -f $fileSize))
-                }
-                else {
-                    $promptWithContext = "$Prompt`n`nFile reference: $FilePath"
-                }
-            }
-        }
-
-        $messages = @(
-            @{ role = 'user'; content = $promptWithContext }
-        )
-
-        $endpoint = "{0}/{1}" -f $Provider.ApiBase.TrimEnd('/'), $Provider.ChatEndpointPath.TrimStart('/')
-        switch ($Provider.Protocol) {
-            'Anthropic' {
-                $headers = @{
-                    'x-api-key'         = $ApiKey
-                    'anthropic-version' = '2023-06-01'
-                    'content-type'      = 'application/json'
-                }
-
-                $body = @{
-                    model      = $Model
-                    max_tokens = 4096
-                    messages   = @(
-                        foreach ($message in $messages) {
-                            @{
-                                role    = $message.role
-                                content = @(
-                                    @{
-                                        type = 'text'
-                                        text = [string]$message.content
-                                    }
-                                )
-                            }
-                        }
-                    )
-                }
-
-                $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body ($body | ConvertTo-Json -Depth 10) -TimeoutSec 120
-                $responseText = @(
-                    foreach ($part in $response.content) {
-                        if ($part.type -eq 'text') {
-                            $part.text
-                        }
-                    }
-                ) -join "`n"
-
-                $promptTokens = [int]$response.usage.input_tokens
-                $completionTokens = [int]$response.usage.output_tokens
-                $text = $responseText
-            }
-            default {
-                $headers = @{
-                    'Authorization' = "Bearer $ApiKey"
-                    'Content-Type'  = 'application/json'
-                }
-
-                $body = @{
-                    model    = $Model
-                    messages = $messages
-                } | ConvertTo-Json -Depth 10
-
-                $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -Body $body -TimeoutSec 120
-                $promptTokens = [int]$response.usage.prompt_tokens
-                $completionTokens = [int]$response.usage.completion_tokens
-                $text = $response.choices[0].message.content
-            }
-        }
-
-        if (-not $text) {
-            throw "No text content returned from $($Provider.DisplayName) for task execution."
-        }
-
-        $totalTokens = $promptTokens + $completionTokens
-        $cost = 0.0
-        if ($totalTokens -gt 0) {
-            $cost = (($promptTokens / 1000.0) * [double]$ProviderSettings.PricePer1kInputTokens) +
-                (($completionTokens / 1000.0) * [double]$ProviderSettings.PricePer1kOutputTokens)
-        }
-
-        return [pscustomobject]@{
-            OutputText        = $text.Trim()
-            TotalTokens       = $totalTokens
-            TotalInputTokens  = $promptTokens
-            TotalOutputTokens = $completionTokens
-            TotalCostUsd      = [Math]::Round($cost, 6)
-            Warnings          = @($warnings)
-        }
-    }
-
-    $powerShellInstance = [System.Management.Automation.PowerShell]::Create()
-    $null = $powerShellInstance.AddScript($backgroundScript.ToString())
-    $null = $powerShellInstance.AddArgument($Prompt)
-    $null = $powerShellInstance.AddArgument($FilePath)
-    $null = $powerShellInstance.AddArgument($Model)
-    $null = $powerShellInstance.AddArgument($ProviderName)
-    $null = $powerShellInstance.AddArgument($provider)
-    $null = $powerShellInstance.AddArgument($providerSettings)
-    $null = $powerShellInstance.AddArgument($ApiKey)
-
-    $handle = $powerShellInstance.BeginInvoke()
-    $script:AnswerTaskState = [pscustomobject]@{
-        PowerShell = $powerShellInstance
-        Handle     = $handle
-    }
-
-    if (-not $script:AnswerTaskTimer) {
-        $script:AnswerTaskTimer = New-Object System.Windows.Threading.DispatcherTimer
-        $script:AnswerTaskTimer.Interval = [TimeSpan]::FromMilliseconds(200)
-        $script:AnswerTaskTimer.Add_Tick({
-            if (-not $script:AnswerTaskState) {
-                $script:AnswerTaskTimer.Stop()
-                return
-            }
-
-            if (-not $script:AnswerTaskState.Handle.IsCompleted) {
-                return
-            }
-
-            $script:AnswerTaskTimer.Stop()
-            Complete-AnswerTask -Handle $script:AnswerTaskState.Handle -PowerShellInstance $script:AnswerTaskState.PowerShell
-        })
-    }
-
-    $script:AnswerTaskTimer.Start()
-}
-
-# =============================================================================
-# Load XAML and create window
-# =============================================================================
-
-$script:ScriptDir  = if ($PSCommandPath) {
-    [System.IO.Path]::GetDirectoryName($PSCommandPath)
-} else {
-    (Get-Location).Path
-}
-$script:PresetsDir = Join-Path $script:ScriptDir 'presets'
-
-$xamlPath = Join-Path -Path $script:ScriptDir -ChildPath 'Prompt_Pilot.MainWindow.xaml'
-if (-not (Test-Path -LiteralPath $xamlPath)) {
-    throw "XAML file not found at $xamlPath"
-}
-
-[xml]$xaml = Get-Content -LiteralPath $xamlPath -Raw
-$reader    = New-Object System.Xml.XmlNodeReader $xaml
-$window    = [Windows.Markup.XamlReader]::Load($reader)
-
-# Cache every control we reference from PowerShell
-$script:PromptTextBox          = $window.FindName('PromptTextBox')
-$script:GoalsTextBox           = $window.FindName('GoalsTextBox')
-$script:ProjectContextTextBox  = $window.FindName('ProjectContextTextBox')
-$script:FilePathTextBox        = $window.FindName('FilePathTextBox')
-$script:BrowseButton           = $window.FindName('BrowseButton')
-$script:RunButton              = $window.FindName('RunButton')
-$script:CopyButton             = $window.FindName('CopyButton')
-$script:AcceptIterationButton  = $window.FindName('AcceptIterationButton')
-$script:SavePresetButton       = $window.FindName('SavePresetButton')
-$script:LoadPresetButton       = $window.FindName('LoadPresetButton')
-$script:ClearSessionKeyButton  = $window.FindName('ClearSessionKeyButton')
-$script:IterationsTextBox      = $window.FindName('IterationsTextBox')
-$script:ModelTextBox           = $window.FindName('ModelTextBox')
-$script:FinalPromptTextBox     = $window.FindName('FinalPromptTextBox')
-$script:HistoryTextBox         = $window.FindName('HistoryTextBox')
-$script:StatusTextBlock        = $window.FindName('StatusTextBlock')
-$script:ProviderStatusTextBlock = $window.FindName('ProviderStatusTextBlock')
-$script:UsageTextBlock         = $window.FindName('UsageTextBlock')
-$script:ModeRefineRadio        = $window.FindName('ModeRefineRadio')
-$script:ModeAnswerRadio        = $window.FindName('ModeAnswerRadio')
-$script:UsePromptButton        = $window.FindName('UsePromptButton')
-$script:CopyTaskOutputButton   = $window.FindName('CopyTaskOutputButton')
-$script:TaskOutputTextBox      = $window.FindName('TaskOutputTextBox')
-$script:LogTextBox             = $window.FindName('LogTextBox')
-$script:BusyIndicatorTextBlock = $window.FindName('BusyIndicatorTextBlock')
-$script:ClearLogButton         = $window.FindName('ClearLogButton')
-$script:CancelButton           = $window.FindName('CancelButton')
-$script:LogToFileCheckBox      = $window.FindName('LogToFileCheckBox')
-$script:LogFilePathTextBox     = $window.FindName('LogFilePathTextBox')
-$script:MenuSettingsApiKey      = $window.FindName('MenuSettingsApiKey')
-$script:MenuHelpBasePrompt      = $window.FindName('MenuHelpBasePrompt')
-$script:MenuHelpRefinementGoals = $window.FindName('MenuHelpRefinementGoals')
-$script:MenuHelpProjectContext  = $window.FindName('MenuHelpProjectContext')
-$script:MenuHelpFile            = $window.FindName('MenuHelpFile')
-$script:MenuHelpAbout           = $window.FindName('MenuHelpAbout')
-
-# Required control validation — fail fast with a clear message
-if (-not $script:PromptTextBox)         { throw "Failed to find PromptTextBox in XAML." }
-if (-not $script:RunButton)             { throw "Failed to find RunButton in XAML." }
-if (-not $script:StatusTextBlock)       { throw "Failed to find StatusTextBlock in XAML." }
-if (-not $script:ModeRefineRadio -or
-    -not $script:ModeAnswerRadio)       { throw "Failed to find mode toggle radio buttons in XAML." }
-if (-not $script:CopyTaskOutputButton)  { throw "Failed to find CopyTaskOutputButton in XAML." }
-if (-not $script:TaskOutputTextBox)     { throw "Failed to find TaskOutputTextBox in XAML." }
-if (-not $script:LogTextBox)            { throw "Failed to find LogTextBox in XAML." }
-if (-not $script:ClearLogButton)        { throw "Failed to find ClearLogButton in XAML." }
-if (-not $script:CancelButton)          { throw "Failed to find CancelButton in XAML." }
-if (-not $script:LogToFileCheckBox)     { throw "Failed to find LogToFileCheckBox in XAML." }
-if (-not $script:LogFilePathTextBox)    { throw "Failed to find LogFilePathTextBox in XAML." }
-if (-not $script:ProviderStatusTextBlock) { throw "Failed to find ProviderStatusTextBlock in XAML." }
-
-# Seed refinement goals with a sensible default
-if (-not $script:GoalsTextBox.Text) {
-    $script:GoalsTextBox.Text = @"
-- Preserve the user's core intent
-- Clarify role, goals, inputs, outputs, and constraints
-- Add structure that makes it easy for coding agents to follow
-- Avoid adding fictional requirements; only infer what is strongly implied
-- Prefer precise, direct language over marketing fluff
-"@
-}
-
-$loadedProviderSettings = Load-ProviderSettings
-$script:SavedApiKeys = $loadedProviderSettings.Keys
-$script:ProviderSettings = $loadedProviderSettings.Providers
-$script:CurrentMode = 'Refine'
-$script:UsageTextBlock.Text = "Tokens: 0 | Cost: `$0.000000"
-Set-ActiveProvider -ProviderName $loadedProviderSettings.ActiveProvider -SkipSave
-
-# =============================================================================
-# Mode management
-# =============================================================================
-
-function Set-Mode {
-    <#
-    .SYNOPSIS
-        Switches the UI between Refine and Answer modes, updating button labels
-        and control states to match.
-    #>
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Refine','Answer')]
-        [string]$Mode
-    )
-
-    $script:CurrentMode = $Mode
-    $script:ModeRefineRadio.IsChecked = ($Mode -eq 'Refine')
-    $script:ModeAnswerRadio.IsChecked = ($Mode -eq 'Answer')
-    $script:RunButton.Content         = if ($Mode -eq 'Refine') { 'Run Refinement' } else { 'Run Task' }
-    $script:HistoryTextBox.IsEnabled  = ($Mode -eq 'Refine')
-    $script:HistoryTextBox.Opacity    = if ($Mode -eq 'Refine') { 1.0 } else { 0.65 }
-
-    if ($Mode -eq 'Refine') {
-        Show-Status -Message "Ready to refine."
-    }
-    else {
-        $script:HistoryTextBox.Text = ''
-        Show-Status -Message "Ready to answer the task."
-    }
-}
-
-# =============================================================================
-# Run functions
-# =============================================================================
-
-function Run-Refinement {
-    <#
-    .SYNOPSIS
-        Reads UI inputs, invokes the iterative refinement API call, and populates
-        the output controls. Guards against a $null result (user cancelled at cost prompt).
-    #>
-    $basePrompt = $script:PromptTextBox.Text
-    if ([string]::IsNullOrWhiteSpace($basePrompt)) {
-        [System.Windows.MessageBox]::Show(
-            "Please enter a base prompt before running refinement.",
-            "Missing prompt",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Warning
-        ) | Out-Null
-        return
-    }
-
-    $goals          = $script:GoalsTextBox.Text
-    $projectContext = $script:ProjectContextTextBox.Text
-    $file           = $script:FilePathTextBox.Text
-    # [1] Fall back to the centralised default model
-    $providerSettings = Get-ProviderRuntimeSettings
-    $model          = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { [string]$providerSettings.Model }
-
-    $iterRaw    = $script:IterationsTextBox.Text
-    $iterations = $script:DefaultIterations
-    if ([int]::TryParse($iterRaw, [ref]$iterations) -eq $false -or $iterations -lt 1) {
-        $iterations = $script:DefaultIterations
-    }
-
-    $script:TaskOutputTextBox.Text = ''
-    Show-Status -Message "Running refinement..." -Usage "Tokens: 0 | Cost: `$0.000000"
-
-    Set-BusyState -IsBusy $true -Message ("Refinement started (iterations: {0}, model: {1})" -f $iterations, $model)
-    try {
-        $result = Invoke-OpenAIRefinement `
-            -BasePrompt      $basePrompt `
-            -RefinementGoals $goals `
-            -ProjectContext  $projectContext `
-            -FilePath        $file `
-            -Iterations      $iterations `
-            -Model           $model
-    }
-    catch {
-        Append-Log -Message ("Refinement failed: {0}" -f $_.Exception.Message)
-        throw
-    }
-    finally {
-        Set-BusyState -IsBusy $false
-    }
-
-    # [5] Guard: user declined the cost confirmation
-    if ($null -eq $result) {
-        Show-Status -Message "Refinement cancelled."
-        return
-    }
-
-    $script:FinalPromptTextBox.Text = $result.FinalPrompt
-
-    $historyLines = @()
-    foreach ($item in $result.Iterations) {
-        $historyLines += ("===== Iteration {0} =====" -f $item.Iteration)
-        $historyLines += $item.Prompt
-        $historyLines += ""
-    }
-    $script:HistoryTextBox.Text = ($historyLines -join [Environment]::NewLine)
-
-    $usageText = "Tokens: {0} (in {1} / out {2}) | Cost: `${3}" -f `
-        $result.TotalTokens, $result.TotalInputTokens, $result.TotalOutputTokens, $result.TotalCostUsd
-    Show-Status -Message "Refinement complete." -Usage $usageText
-    Append-Log -Message ("Refinement complete. {0}" -f $usageText)
-}
-
-function Run-AnswerTask {
-    <#
-    .SYNOPSIS
-        Reads UI inputs, starts a background task request, and updates the UI
-        when the model's response is ready.
-    #>
-    $promptToRun = $script:PromptTextBox.Text
-    if ([string]::IsNullOrWhiteSpace($promptToRun)) {
-        [System.Windows.MessageBox]::Show(
-            "Provide a prompt (or click 'Use this Prompt' after refining) before running the task.",
-            "Missing prompt",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Warning
-        ) | Out-Null
-        return
-    }
-
-    $file  = $script:FilePathTextBox.Text
-    # [1] Fall back to the centralised default model
-    $providerSettings = Get-ProviderRuntimeSettings
-    $model = if ($script:ModelTextBox.Text) { $script:ModelTextBox.Text } else { [string]$providerSettings.Model }
-
-    Show-Status -Message "Running task..." -Usage "Tokens: 0 | Cost: `$0.000000"
-    $script:TaskOutputTextBox.Text = ''
-
-    Set-BusyState -IsBusy $true -Message ("Task started (model: {0})" -f $model)
-    try {
-        $apiKey = Get-ApiKey -ProviderName $script:ActiveProvider
-        Start-AnswerTask -Prompt $promptToRun -FilePath $file -Model $model -ProviderName $script:ActiveProvider -ApiKey $apiKey
-        # [12] Cancel stays ENABLED: it is the only recovery from a slow or hung
-        # request short of killing the app. Accept-draft is refine-only, so it
-        # stays off while a background task runs.
-        if ($script:AcceptIterationButton) { $script:AcceptIterationButton.IsEnabled = $false }
-        Append-Log -Message "Task request is running in the background."
-    }
-    catch {
-        Set-BusyState -IsBusy $false
-        Append-Log -Message ("Task failed: {0}" -f $_.Exception.Message)
-        throw
-    }
-}
-
-function Invoke-ModeAction {
-    <#
-    .SYNOPSIS
-        Dispatches to Run-Refinement or Run-AnswerTask based on the current mode.
-    #>
-    if ($script:CurrentMode -eq 'Answer') {
-        Run-AnswerTask
-    }
-    else {
-        Run-Refinement
-    }
-}
-
-# =============================================================================
-# Event handlers
-# =============================================================================
-
-# Mode toggles
-$script:ModeRefineRadio.Add_Checked({ Set-Mode -Mode 'Refine' })
-$script:ModeAnswerRadio.Add_Checked({ Set-Mode -Mode 'Answer' })
-
-# File browse
-$script:BrowseButton.Add_Click({
-    try {
-        $ofd = New-Object System.Windows.Forms.OpenFileDialog
-        $ofd.Title  = "Select a file for context (optional)"
-        $ofd.Filter = "All files (*.*)|*.*"
-
-        if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            $script:FilePathTextBox.Text = $ofd.FileName
-        }
-    }
-    catch {
-        [System.Windows.MessageBox]::Show(
-            "Unable to open file dialog: $($_.Exception.Message)",
-            "Error",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Error
-        ) | Out-Null
-    }
-})
-
-# Primary run button
-$script:RunButton.Add_Click({
-    try {
-        Invoke-ModeAction
-    }
-    catch {
-        $msg = "Action failed: $($_.Exception.Message)"
-        Show-Status -Message $msg
-        Append-Log  -Message $msg
-        [System.Windows.MessageBox]::Show(
-            $msg,
-            "Error",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Error
-        ) | Out-Null
-    }
-})
-
-# [3] Cancel — refine mode: signals the loop to stop after the current call.
-# [12] Answer mode: stops the background pipeline; the poll timer then reports
-# the cancellation and restores the UI through Complete-AnswerTask.
-$script:CancelButton.Add_Click({
-    if ($script:AnswerTaskState) {
-        Stop-AnswerTask
-        return
-    }
-
-    $script:CancelRequested = $true
-    Append-Log -Message "Cancel requested — will stop after the current iteration completes."
-})
-
-# [4] Accept Current Draft — promotes the in-progress draft and cancels remaining iterations
-$script:AcceptIterationButton.Add_Click({
-    if (-not [string]::IsNullOrWhiteSpace($script:FinalPromptTextBox.Text)) {
-        $script:PromptTextBox.Text = $script:FinalPromptTextBox.Text
-        $script:CancelRequested   = $true
-        Append-Log -Message "Current draft accepted — remaining iterations will be skipped."
-    }
-})
-
-# Use this Prompt — switches to Answer mode and runs immediately
-$script:UsePromptButton.Add_Click({
-    try {
-        if (-not [string]::IsNullOrWhiteSpace($script:FinalPromptTextBox.Text)) {
-            $script:PromptTextBox.Text = $script:FinalPromptTextBox.Text
-            Append-Log -Message "Using refined prompt to run task."
-            Set-Mode -Mode 'Answer'
-            Run-AnswerTask
-        }
-        else {
-            [System.Windows.MessageBox]::Show(
-                "Refine first, then click 'Use this Prompt' to execute the final instruction.",
-                "No refined prompt yet",
-                [System.Windows.MessageBoxButton]::OK,
-                [System.Windows.MessageBoxImage]::Information
-            ) | Out-Null
-        }
-    }
-    catch {
-        $msg = "Failed to run task: $($_.Exception.Message)"
-        Show-Status -Message $msg
-        [System.Windows.MessageBox]::Show(
-            $msg,
-            "Error",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Error
-        ) | Out-Null
-    }
-})
-
-# Clear log
-$script:ClearLogButton.Add_Click({
-    try {
-        $script:LogTextBox.Clear()
-        Append-Log -Message "Log cleared."
-    }
-    catch {
-        Append-Log -Message ("Failed to clear log: {0}" -f $_.Exception.Message)
-    }
-})
-
-# Copy final prompt to clipboard
-$script:CopyButton.Add_Click({
-    try {
-        if (-not [string]::IsNullOrWhiteSpace($script:FinalPromptTextBox.Text)) {
-            [System.Windows.Clipboard]::SetText($script:FinalPromptTextBox.Text)
-            Show-Status -Message "Final prompt copied to clipboard."
-            Append-Log  -Message "Final prompt copied to clipboard."
-        }
-    }
-    catch {
-        Show-Status -Message "Failed to copy to clipboard: $($_.Exception.Message)"
-        Append-Log  -Message ("Copy failed: {0}" -f $_.Exception.Message)
-    }
-})
-
-# Copy task output to clipboard
-$script:CopyTaskOutputButton.Add_Click({
-    try {
-        if (-not [string]::IsNullOrWhiteSpace($script:TaskOutputTextBox.Text)) {
-            [System.Windows.Clipboard]::SetText($script:TaskOutputTextBox.Text)
-            Show-Status -Message "Task output copied to clipboard."
-            Append-Log  -Message "Task output copied to clipboard."
-        }
-    }
-    catch {
-        Show-Status -Message "Failed to copy task output: $($_.Exception.Message)"
-        Append-Log  -Message ("Copy task output failed: {0}" -f $_.Exception.Message)
-    }
-})
-
-# [6] Save Preset
-$script:SavePresetButton.Add_Click({
-    try {
-        if (-not (Test-Path -LiteralPath $script:PresetsDir)) {
-            New-Item -ItemType Directory -Path $script:PresetsDir | Out-Null
-        }
-
-        $sfd = New-Object System.Windows.Forms.SaveFileDialog
-        $sfd.Title            = "Save Preset"
-        $sfd.Filter           = "JSON preset (*.json)|*.json"
-        $sfd.InitialDirectory = $script:PresetsDir
-        $sfd.FileName         = "preset_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
-
-        if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            @{
-                Model          = $script:ModelTextBox.Text
-                Iterations     = $script:IterationsTextBox.Text
-                Goals          = $script:GoalsTextBox.Text
-                ProjectContext = $script:ProjectContextTextBox.Text
-            } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $sfd.FileName -Encoding UTF8
-
-            Append-Log -Message ("Preset saved: {0}" -f $sfd.FileName)
-        }
-    }
-    catch {
-        Append-Log -Message ("Save preset failed: {0}" -f $_.Exception.Message)
-        [System.Windows.MessageBox]::Show(
-            "Failed to save preset: $($_.Exception.Message)",
-            "Error",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Error
-        ) | Out-Null
-    }
-})
-
-# [6] Load Preset
-$script:LoadPresetButton.Add_Click({
-    try {
-        if (-not (Test-Path -LiteralPath $script:PresetsDir)) {
-            New-Item -ItemType Directory -Path $script:PresetsDir | Out-Null
-        }
-
-        $ofd = New-Object System.Windows.Forms.OpenFileDialog
-        $ofd.Title            = "Load Preset"
-        $ofd.Filter           = "JSON preset (*.json)|*.json"
-        $ofd.InitialDirectory = $script:PresetsDir
-
-        if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            $preset      = Get-Content -LiteralPath $ofd.FileName -Raw -Encoding UTF8 | ConvertFrom-Json
-            $presentKeys = $preset.PSObject.Properties.Name
-            $requiredKeys = @('Model', 'Iterations', 'Goals', 'ProjectContext')
-            $missingKeys  = $requiredKeys | Where-Object { $presentKeys -notcontains $_ }
-
-            if ($missingKeys) {
-                Append-Log -Message ("Preset missing keys (skipped): {0}" -f ($missingKeys -join ', '))
-            }
-
-            if ($presentKeys -contains 'Model')          { $script:ModelTextBox.Text          = $preset.Model }
-            if ($presentKeys -contains 'Iterations')     { $script:IterationsTextBox.Text     = $preset.Iterations }
-            if ($presentKeys -contains 'Goals')          { $script:GoalsTextBox.Text          = $preset.Goals }
-            if ($presentKeys -contains 'ProjectContext') { $script:ProjectContextTextBox.Text = $preset.ProjectContext }
-
-            Append-Log -Message ("Preset loaded: {0}" -f $ofd.FileName)
-        }
-    }
-    catch {
-        Append-Log -Message ("Load preset failed: {0}" -f $_.Exception.Message)
-        [System.Windows.MessageBox]::Show(
-            "Failed to load preset: $($_.Exception.Message)",
-            "Error",
-            [System.Windows.MessageBoxButton]::OK,
-            [System.Windows.MessageBoxImage]::Error
-        ) | Out-Null
-    }
-})
-
-# [9] Clear Session Key
-$script:ClearSessionKeyButton.Add_Click({
-    $provider = Get-ProviderDefinition
-    $script:SessionApiKeys.Remove($script:ActiveProvider) | Out-Null
-    Append-Log  -Message ("Session API key cleared for {0}." -f $provider.DisplayName)
-    Show-Status -Message ("Session API key cleared for {0}." -f $provider.DisplayName)
-    Update-ProviderIndicator
-})
-
-# [7] Log-to-file checkbox: Checked — prompt for a save path
-$script:LogToFileCheckBox.Add_Checked({
-    try {
-        $sfd          = New-Object System.Windows.Forms.SaveFileDialog
-        $sfd.Title    = "Choose log file location"
-        $sfd.Filter   = "Log files (*.log)|*.log|All files (*.*)|*.*"
-        $sfd.FileName = "Prompt_Pilot_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-
-        if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            $script:LogFilePath = $sfd.FileName
-            $script:LogFilePathTextBox.Text = $sfd.FileName
-            Append-Log -Message ("File logging enabled: {0}" -f $sfd.FileName)
-        }
-        else {
-            # User cancelled the dialog — revert without re-triggering Unchecked handler
-            $script:LogToFileCheckBox.IsChecked = $false
-        }
-    }
-    catch {
-        $script:LogToFileCheckBox.IsChecked = $false
-        Append-Log -Message ("Failed to configure log file: {0}" -f $_.Exception.Message)
-    }
-})
-
-# [7] Log-to-file checkbox: Unchecked — disable file logging
-$script:LogToFileCheckBox.Add_Unchecked({
-    $script:LogFilePath = $null
-    $script:LogFilePathTextBox.Text = ''
-    Append-Log -Message "File logging disabled."
-})
-
-# =============================================================================
-# Menu — Settings
-# =============================================================================
-
-# Settings → Configure API Key
-$script:MenuSettingsApiKey.Add_Click({
-    $settingsXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="Settings — Provider Settings" Width="500" Height="470"
-        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
-        ShowInTaskbar="False">
-    <StackPanel Margin="14">
-        <TextBlock Text="Active provider:" Margin="0,0,0,4" />
-        <ComboBox Name="ProviderComboBox" Margin="0,0,0,10" />
-        <TextBlock Name="StatusLabel" TextWrapping="Wrap" Margin="0,0,0,10" />
-        <TextBlock Text="Model for selected provider:" Margin="0,0,0,4" />
-        <TextBox Name="ModelBox" Margin="0,0,0,10" />
-        <TextBlock Text="Input price per 1K tokens (USD):" Margin="0,0,0,4" />
-        <TextBox Name="InputPriceBox" Margin="0,0,0,10" />
-        <TextBlock Text="Output price per 1K tokens (USD):" Margin="0,0,0,4" />
-        <TextBox Name="OutputPriceBox" Margin="0,0,0,10" />
-        <CheckBox Name="RemoveSavedKeyCheckBox"
-                  Content="Remove saved key for selected provider"
-                  Margin="0,0,0,10" />
-        <TextBlock Text="New API key (leave blank to keep current):" Margin="0,0,0,4" />
-        <PasswordBox Name="KeyBox" Margin="0,0,0,10" />
-        <TextBlock Text="Models and token prices are stored per provider. Keys entered here are saved securely for the current Windows user. Run-time prompts still remain session-only."
-                   TextWrapping="Wrap"
-                   Foreground="Gray"
-                   FontSize="11"
-                   Margin="0,0,0,10" />
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Name="OkBtn"     Content="OK"     Padding="24,4" Margin="0,0,8,0" IsDefault="True" />
-            <Button Name="CancelBtn" Content="Cancel" Padding="24,4" IsCancel="True" />
-        </StackPanel>
-    </StackPanel>
-</Window>
-'@
-
-    $settingsReader = New-Object System.Xml.XmlNodeReader ([xml]$settingsXaml)
-    $settingsDialog = [Windows.Markup.XamlReader]::Load($settingsReader)
-    $providerCombo   = $settingsDialog.FindName('ProviderComboBox')
-    $statusLabel    = $settingsDialog.FindName('StatusLabel')
-    $modelBox       = $settingsDialog.FindName('ModelBox')
-    $inputPriceBox  = $settingsDialog.FindName('InputPriceBox')
-    $outputPriceBox = $settingsDialog.FindName('OutputPriceBox')
-    $removeCheckBox = $settingsDialog.FindName('RemoveSavedKeyCheckBox')
-    $keyBox         = $settingsDialog.FindName('KeyBox')
-    $okBtn          = $settingsDialog.FindName('OkBtn')
-    $cancelBtn      = $settingsDialog.FindName('CancelBtn')
-
-    foreach ($providerName in $script:ProviderDefinitions.Keys) {
-        [void]$providerCombo.Items.Add($providerName)
-    }
-    $providerCombo.SelectedItem = $script:ActiveProvider
-
-    $updateStatus = {
-        $selectedProvider = [string]$providerCombo.SelectedItem
-        if ([string]::IsNullOrWhiteSpace($selectedProvider)) {
+Initialize-PilotLogging
+try {
+    if (-not $SmokeTest) {
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try { $instanceId = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($script:DataDirectory.ToLowerInvariant())))).Replace('-', '').Substring(0, 24) } finally { $hash.Dispose() }
+        $created = $false
+        $script:Mutex = [Threading.Mutex]::new($true, ('Local\PromptPilot-' + $instanceId), [ref]$created)
+        $script:OwnsMutex = $created
+        if (-not $created) {
+            [IO.File]::WriteAllText((Join-Path $script:DataDirectory 'activate.request'), '')
+            Write-PilotLog 'Another instance is active; activation requested.'
             return
         }
-
-        $provider = Get-ProviderDefinition -ProviderName $selectedProvider
-        $state = Get-ProviderCredentialState -ProviderName $selectedProvider
-        $providerSettings = Get-ProviderRuntimeSettings -ProviderName $selectedProvider
-        $statusLabel.Text = "{0} is currently using {1}. Update the model and pricing if needed, and leave the key box blank to keep the current saved value." -f $provider.DisplayName, $state.Summary
-        $modelBox.Text = [string]$providerSettings.Model
-        $inputPriceBox.Text = ([double]$providerSettings.PricePer1kInputTokens).ToString('0.######')
-        $outputPriceBox.Text = ([double]$providerSettings.PricePer1kOutputTokens).ToString('0.######')
+        Write-PilotJson $script:InstancePath @{ ProcessId = $PID; StartedAtUtc = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToString('o'); AppDirectory = $script:AppDirectory }
     }
-
-    $providerCombo.Add_SelectionChanged($updateStatus)
-    & $updateStatus
-
-    $okBtn.Add_Click({
-        $settingsDialog.DialogResult = $true
-        $settingsDialog.Close()
-    })
-    $cancelBtn.Add_Click({
-        $settingsDialog.DialogResult = $false
-        $settingsDialog.Close()
-    })
-
-    $settingsDialog.Owner = $window
-    $dlgResult = $settingsDialog.ShowDialog()
-
-    if ($dlgResult -eq $true) {
-        $selectedProvider = [string]$providerCombo.SelectedItem
-        if ([string]::IsNullOrWhiteSpace($selectedProvider)) {
-            $selectedProvider = $script:DefaultProvider
-        }
-
-        $providerSettings = Get-ProviderRuntimeSettings -ProviderName $selectedProvider
-        $modelValue = if ([string]::IsNullOrWhiteSpace($modelBox.Text)) {
-            [string]$providerSettings.Model
-        }
-        else {
-            $modelBox.Text.Trim()
-        }
-
-        $inputPrice = [double]$providerSettings.PricePer1kInputTokens
-        if (-not [string]::IsNullOrWhiteSpace($inputPriceBox.Text) -and -not [double]::TryParse($inputPriceBox.Text.Trim(), [ref]$inputPrice)) {
-            [System.Windows.MessageBox]::Show(
-                "Enter a valid input price per 1K tokens.",
-                "Invalid setting",
-                [System.Windows.MessageBoxButton]::OK,
-                [System.Windows.MessageBoxImage]::Warning
-            ) | Out-Null
-            return
-        }
-
-        $outputPrice = [double]$providerSettings.PricePer1kOutputTokens
-        if (-not [string]::IsNullOrWhiteSpace($outputPriceBox.Text) -and -not [double]::TryParse($outputPriceBox.Text.Trim(), [ref]$outputPrice)) {
-            [System.Windows.MessageBox]::Show(
-                "Enter a valid output price per 1K tokens.",
-                "Invalid setting",
-                [System.Windows.MessageBoxButton]::OK,
-                [System.Windows.MessageBoxImage]::Warning
-            ) | Out-Null
-            return
-        }
-
-        $script:ProviderSettings[$selectedProvider] = [ordered]@{
-            Model                  = $modelValue
-            PricePer1kInputTokens  = [double]$inputPrice
-            PricePer1kOutputTokens = [double]$outputPrice
-        }
-
-        Set-ActiveProvider -ProviderName $selectedProvider -SkipSave
-
-        if ($removeCheckBox.IsChecked -eq $true) {
-            $script:SavedApiKeys[$selectedProvider] = $null
-            $script:SessionApiKeys.Remove($selectedProvider) | Out-Null
-            Append-Log -Message ("Saved API key removed for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($keyBox.Password)) {
-            $script:SavedApiKeys[$selectedProvider] = $keyBox.Password
-            Append-Log -Message ("Saved API key updated for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
-        }
-
-        Save-ProviderSettings
-        Append-Log -Message ("Provider settings updated for {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
-
-        Update-ProviderIndicator
-        Show-Status -Message ("Active provider set to {0}." -f (Get-ProviderDefinition -ProviderName $selectedProvider).DisplayName)
+    try { $script:Preferences = Read-PilotPreferences $script:SettingsPath }
+    catch { $script:SettingsReadError = $_.Exception.Message; $script:Preferences = New-PilotPreferences; Write-PilotLog $script:SettingsReadError }
+    foreach ($providerName in (Get-PilotProviders).Keys) {
+        try { $keyInfo = Get-PilotCredential $providerName $script:Preferences $script:SessionKeys; if ($keyInfo.Key) { $script:KnownSecrets += $keyInfo.Key } } catch { Write-PilotLog ('A saved credential could not be opened for ' + $providerName) }
     }
-})
-
-# =============================================================================
-# Menu — Help
-# =============================================================================
-
-$script:MenuHelpBasePrompt.Add_Click({
-    [System.Windows.MessageBox]::Show(
-        "Base Prompt`n`n" +
-        "The raw, rough-draft instruction that is the starting point for refinement.`n`n" +
-        "Enter the task or question you want a coding assistant to answer. It can be a " +
-        "single sentence or several paragraphs. In Refine mode the text is iteratively " +
-        "transformed into a structured prompt with Role, Goals, Context, Deliverables, " +
-        "and Constraints sections.`n`n" +
-        "In Answer mode this field is sent directly to OpenAI and the model's response " +
-        "appears in the Task Output panel.",
-        "Help — Base Prompt",
-        [System.Windows.MessageBoxButton]::OK,
-        [System.Windows.MessageBoxImage]::Information
-    ) | Out-Null
-})
-
-$script:MenuHelpRefinementGoals.Add_Click({
-    [System.Windows.MessageBox]::Show(
-        "Refinement Goals`n`n" +
-        "Optional bullet points that guide how the refiner reshapes your Base Prompt.`n`n" +
-        "Use this field to steer the style or emphasis of the output. Examples:`n" +
-        "  - Focus on Python 3.12 compatibility`n" +
-        "  - Avoid adding test requirements`n" +
-        "  - Keep the result under 300 words`n`n" +
-        "The default goals produce a general-purpose, well-structured prompt. " +
-        "Clear or replace them to change the refiner's behaviour. " +
-        "This field is only used in Refine mode.",
-        "Help — Refinement Goals",
-        [System.Windows.MessageBoxButton]::OK,
-        [System.Windows.MessageBoxImage]::Information
-    ) | Out-Null
-})
-
-$script:MenuHelpProjectContext.Add_Click({
-    [System.Windows.MessageBox]::Show(
-        "Project Context`n`n" +
-        "Optional background about your project that helps the refiner produce more " +
-        "relevant, concrete prompts.`n`n" +
-        "Useful things to include:`n" +
-        "  - Language / framework  (e.g. 'C# ASP.NET Core 8 API')`n" +
-        "  - Team conventions      (e.g. 'prefer async/await over callbacks')`n" +
-        "  - Runtime environment   (e.g. 'Windows Server 2022, PS 7.4')`n`n" +
-        "Leave blank to use the built-in default (PowerShell-first automation project). " +
-        "This field is not sent to OpenAI in Answer mode.",
-        "Help — Project Context",
-        [System.Windows.MessageBoxButton]::OK,
-        [System.Windows.MessageBoxImage]::Information
-    ) | Out-Null
-})
-
-$script:MenuHelpFile.Add_Click({
-    [System.Windows.MessageBox]::Show(
-        "File (optional)`n`n" +
-        "Attach a local file whose path will be referenced in the prompt sent to OpenAI.`n`n" +
-        "Constraints:`n" +
-        "  - The file must exist on disk when you click Run.`n" +
-        "  - Maximum size: 512 KB (larger files are silently omitted).`n`n" +
-        "The file path — not its contents — is appended to the prompt text. " +
-        "Use it to give the model a reference point such as a config file, " +
-        "schema, or script you are actively working with.`n`n" +
-        "Click Browse... to choose a file, or type the full path directly.",
-        "Help — File",
-        [System.Windows.MessageBoxButton]::OK,
-        [System.Windows.MessageBoxImage]::Information
-    ) | Out-Null
-})
-
-$script:MenuHelpAbout.Add_Click({
-    [System.Windows.MessageBox]::Show(
-        "Prompt Pilot`n`n" +
-        "A WPF tool for iteratively refining rough prompts into production-grade task " +
-        "descriptions suitable for coding assistants such as GitHub Copilot, Claude, " +
-        "or ChatGPT.`n`n" +
-        "Typical workflow:`n" +
-        "  1. Enter a rough Base Prompt.`n" +
-        "  2. Adjust Refinement Goals and Project Context as needed.`n" +
-        "  3. Click Run Refinement — the model improves the prompt over N iterations.`n" +
-        "  4. Copy the final prompt, or click Use this Prompt to execute it directly.`n`n" +
-        "API key priority per provider: session key > saved settings key > provider env var > " +
-        "interactive prompt at run time.",
-        "About — Prompt Pilot",
-        [System.Windows.MessageBoxButton]::OK,
-        [System.Windows.MessageBoxImage]::Information
-    ) | Out-Null
-})
-
-# =============================================================================
-# Startup
-# =============================================================================
-
-Set-Mode -Mode 'Refine'
-Update-ProviderIndicator
-Append-Log -Message "Ready."
-$window.Add_Closing({
-    if ($script:AnswerTaskTimer) {
-        $script:AnswerTaskTimer.Stop()
+    [xml]$markup = Get-Content -LiteralPath (Join-Path $script:AppDirectory 'Prompt_Pilot.MainWindow.xaml') -Raw -Encoding UTF8
+    $script:Window = [Windows.Markup.XamlReader]::Load([Xml.XmlNodeReader]::new($markup))
+    foreach ($node in $markup.SelectNodes('//*[@Name and not(ancestor::*[local-name()="ControlTemplate"])]')) { $script:Controls[$node.Name] = $script:Window.FindName([string]$node.Name); if (-not $script:Controls[$node.Name]) { throw ('Missing UI control: ' + $node.Name) } }
+    $script:Controls.VersionTextBlock.Text = 'Version ' + $script:Product.version
+    $iconPath = Join-Path $script:AppDirectory 'assets/prompt-pilot.ico'
+    if (Test-Path -LiteralPath $iconPath) { $script:Window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$iconPath) }
+    foreach ($profile in @('Coding task', 'Investigation', 'General task')) { $null = $script:Controls.ProfileComboBox.Items.Add($profile) }
+    foreach ($source in @('Selected refined prompt', 'Original request')) { $null = $script:Controls.AnswerSourceComboBox.Items.Add($source) }
+    $script:Examples = @(
+        @{ Title = 'Fix a bug'; Profile = 'Coding task'; Prompt = 'Fix the CSV parser so quoted commas work. Preserve blank rows. Do not add dependencies. Add focused regression tests.' },
+        @{ Title = 'Investigate a failure'; Profile = 'Investigation'; Prompt = 'Investigate why the nightly import stopped yesterday. Start with recent changes and logs. Separate confirmed facts from hypotheses. Do not modify production data.' },
+        @{ Title = 'Plan a focused change'; Profile = 'Coding task'; Prompt = 'Review the current repository and implement the next dependency-ready roadmap task. Preserve unrelated edits. Validate the change and report any remaining acceptance gaps.' },
+        @{ Title = 'Write a clear brief'; Profile = 'General task'; Prompt = 'Turn my meeting notes into a concise project brief. Keep the stated scope, owners and dates. Flag missing decisions without inventing answers.' }
+    )
+    $script:Controls.ExampleComboBox.DisplayMemberPath = 'Title'
+    foreach ($example in $script:Examples) { $null = $script:Controls.ExampleComboBox.Items.Add([pscustomobject]$example) }
+    $active = $script:Preferences.ActiveProvider
+    $session = New-PilotSession $active $script:Preferences.Providers[$active].Model
+    $restored = $false
+    if ($script:Preferences.Autosave -and $script:Preferences.LastSessionId -cmatch '^[a-f0-9]{32}$') {
+        $sessionPath = Join-Path $script:SessionsDirectory ($script:Preferences.LastSessionId + '.json')
+        if (Test-Path -LiteralPath $sessionPath) { try { $session = Read-PilotSession $sessionPath; $restored = $true } catch { Write-PilotLog ('Saved session could not be restored: ' + $_.Exception.Message) } }
     }
-
-    if ($script:AnswerTaskState -and $script:AnswerTaskState.PowerShell) {
+    Load-PilotUiSession $session
+    $script:Controls.AutosaveCheckBox.IsChecked = $script:Preferences.Autosave
+    foreach ($name in @('PromptTextBox', 'GoalsTextBox', 'ProjectContextTextBox', 'FinalPromptTextBox', 'IterationsTextBox', 'MaxOutputTextBox', 'BudgetTextBox')) { $script:Controls[$name].Add_TextChanged({ Mark-PilotDirty }) }
+    $script:Controls.ProfileComboBox.Add_SelectionChanged({ Mark-PilotDirty })
+    $script:Controls.AnswerSourceComboBox.Add_SelectionChanged({ Mark-PilotDirty })
+    $script:Controls.ModeRefineRadio.Add_Click({ Set-PilotUiMode Refine; Mark-PilotDirty })
+    $script:Controls.ModeAnswerRadio.Add_Click({ Set-PilotUiMode Answer; Mark-PilotDirty })
+    $script:Controls.RunButton.Add_Click({ Invoke-PilotUiAction { Start-PilotUiRun } })
+    $script:Controls.CancelButton.Add_Click({ Stop-PilotBackground })
+    $script:Controls.AcceptIterationButton.Add_Click({ Stop-PilotBackground -KeepDraft })
+    $script:Controls.UsePromptButton.Add_Click({ Invoke-PilotUiAction { if (-not $script:Controls.FinalPromptTextBox.Text) { throw 'Create or write a draft first.' }; $script:Controls.AnswerSourceComboBox.SelectedIndex = 0; Set-PilotUiMode Answer; Start-PilotUiRun } })
+    $script:Controls.CopyButton.Add_Click({ Invoke-PilotUiAction { if ($script:Controls.FinalPromptTextBox.Text) { [Windows.Clipboard]::SetText($script:Controls.FinalPromptTextBox.Text); Set-PilotFeedback 'Prompt copied.' } } })
+    $script:Controls.CopyTaskOutputButton.Add_Click({ Invoke-PilotUiAction { if ($script:Controls.TaskOutputTextBox.Text) { [Windows.Clipboard]::SetText($script:Controls.TaskOutputTextBox.Text); Set-PilotFeedback 'Answer copied.' } } })
+    $script:Controls.OutputTabs.Add_SelectionChanged({ if ($script:Controls.OutputTabs.SelectedItem -eq $script:Controls.CompareTab) { Update-PilotComparison } })
+    $script:Controls.RevisionListBox.Add_SelectionChanged({ if ($script:Controls.RevisionListBox.SelectedItem -and -not $script:LoadingSession) { $script:Controls.FinalPromptTextBox.Text = $script:Controls.RevisionListBox.SelectedItem.Text; Update-PilotComparison; Mark-PilotDirty; $script:Controls.OutputTabs.SelectedItem = $script:Controls.DraftTab } })
+    $script:Controls.ExampleComboBox.Add_SelectionChanged({ if ($script:Controls.ExampleComboBox.SelectedItem) { if ($script:Controls.PromptTextBox.Text) { Set-PilotFeedback 'Start a new session to load an example without replacing your request.' } else { $script:Controls.PromptTextBox.Text = $script:Controls.ExampleComboBox.SelectedItem.Prompt; $script:Controls.ProfileComboBox.SelectedItem = $script:Controls.ExampleComboBox.SelectedItem.Profile; Mark-PilotDirty } } })
+    $script:Controls.BrowseButton.Add_Click({ Invoke-PilotUiAction { $dialog = [Microsoft.Win32.OpenFileDialog]::new(); $dialog.Filter = 'Text and source files|*.txt;*.md;*.ps1;*.psm1;*.json;*.csv;*.yaml;*.yml;*.xml;*.cs;*.py;*.js;*.ts;*.sql;*.html;*.css;*.log;*.toml;*.go;*.rs|All files|*.*'; if ($dialog.ShowDialog($script:Window)) { $null = Read-PilotAttachment $dialog.FileName; $script:Controls.FilePathTextBox.Text = $dialog.FileName; $script:Controls.IncludeFileCheckBox.IsChecked = $false; Update-PilotAttachmentPreview; Mark-PilotDirty } } })
+    $script:Controls.IncludeFileCheckBox.Add_Checked({ Update-PilotAttachmentPreview; Mark-PilotDirty })
+    $script:Controls.IncludeFileCheckBox.Add_Unchecked({ Update-PilotAttachmentPreview; Mark-PilotDirty })
+    $script:Controls.AutosaveCheckBox.Add_Click({ Invoke-PilotUiAction { $script:Preferences.Autosave = ($script:Controls.AutosaveCheckBox.IsChecked -eq $true); Save-PilotUiPreferences; if ($script:Preferences.Autosave) { Save-PilotAutosave } else { $script:Controls.SaveStateTextBlock.Text = 'Autosave off. Use Save as to keep this session.' } } })
+    foreach ($name in @('NewSessionButton', 'MenuNewSession')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { New-PilotUiSession } }) }
+    foreach ($name in @('OpenSessionButton', 'MenuOpenSession')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { Open-PilotUiSession } }) }
+    foreach ($name in @('SaveSessionButton', 'MenuSaveSession')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { $null = Save-PilotSessionAs } }) }
+    foreach ($name in @('ExportButton', 'MenuExportSession')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { Export-PilotUiSession } }) }
+    foreach ($name in @('ProviderButton', 'MenuSettingsApiKey')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { Show-PilotSettings } }) }
+    foreach ($name in @('OpenLogsButton', 'MenuOpenLogs')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { $directory = if ($script:LogFilePath) { Split-Path -Parent $script:LogFilePath } else { $script:DataDirectory }; Start-Process explorer.exe -ArgumentList ('"' + $directory + '"') } }) }
+    $script:Controls.ClearLogButton.Add_Click({ $script:Controls.LogTextBox.Clear(); Write-PilotLog 'Activity view cleared. Disk log retained.' })
+    $script:Controls.MenuHelpAbout.Add_Click({ [Windows.MessageBox]::Show($script:Window, ("Prompt Pilot " + $script:Product.version + "`n`nRefine coding-agent instructions while preserving your intent.`n`nPrompts and answers are sent only to the provider you select. Included file text is shown in the preview. Sessions are stored locally when autosave is enabled. API keys saved on Windows use protection for your user account. There is no telemetry.`n`nCosts are estimates using the selected model's rates. Output limits include reasoning tokens. Set account spending limits with your provider as well.`n`nData: " + $script:DataDirectory + "`nLogs: " + $script:LogFilePath), 'About Prompt Pilot') | Out-Null })
+    $script:Window.Add_PreviewKeyDown({ param($sender, $eventArgs) if (($eventArgs.KeyboardDevice.Modifiers -band [Windows.Input.ModifierKeys]::Control) -and -not $script:Operation) { switch ($eventArgs.Key) { N { Invoke-PilotUiAction { New-PilotUiSession }; $eventArgs.Handled = $true } O { Invoke-PilotUiAction { Open-PilotUiSession }; $eventArgs.Handled = $true } S { Invoke-PilotUiAction { $null = Save-PilotSessionAs }; $eventArgs.Handled = $true } } } })
+    $script:Timer = [Windows.Threading.DispatcherTimer]::new()
+    $script:Timer.Interval = [TimeSpan]::FromMilliseconds(150)
+    $script:Timer.Add_Tick({
         try {
-            $script:AnswerTaskState.PowerShell.Stop()
+            Receive-PilotEvents
+            Complete-PilotBackground
+            if ($script:Dirty -and $script:Preferences.Autosave -and ([DateTime]::UtcNow - $script:LastEditUtc).TotalSeconds -gt 1) { try { Save-PilotAutosave } catch { $script:LastEditUtc = [DateTime]::UtcNow.AddSeconds(10); Set-PilotFeedback ('Autosave needs attention: ' + $_.Exception.Message) -ErrorState } }
+            if (-not $SmokeTest) {
+                $activation = Join-Path $script:DataDirectory 'activate.request'
+                if (Test-Path -LiteralPath $activation) { Remove-Item -LiteralPath $activation; $script:Window.WindowState = 'Normal'; $null = $script:Window.Activate() }
+                $restartPath = Join-Path $script:DataDirectory 'restart.request'
+                if (Test-Path -LiteralPath $restartPath) { $request = Read-PilotJson $restartPath; Remove-Item -LiteralPath $restartPath; if ([int]$request.ProcessId -eq $PID) { $script:Window.Close() } }
+            }
         }
+        catch { Set-PilotFeedback $_.Exception.Message -ErrorState }
+    })
+    $script:Timer.Start()
+    $script:Window.Add_Closing({
+        param($sender, $eventArgs)
+        if ($script:Closing) { return }
+        if (-not $SmokeTest -and -not $script:Preferences.Autosave -and $script:Dirty -and -not (Confirm-PilotSessionChange)) { $eventArgs.Cancel = $true; return }
+        $script:Closing = $true
+        if ($script:Operation) {
+            $script:Operation.Cancellation.Cancel()
+            if ($script:Operation.Handle.AsyncWaitHandle.WaitOne(1500)) { Complete-PilotBackground }
+            else { Receive-PilotEvents; $script:Operation.Worker.Stop(); $script:Operation.Worker.Dispose(); $script:Operation.Cancellation.Dispose(); $script:Operation = $null }
+        }
+        try { Save-PilotAutosave }
         catch {
+            $message = 'Final autosave failed: ' + $_.Exception.Message
+            Write-PilotLog $message
+            if ($SmokeTest) { throw }
+            if (-not (Confirm-PilotDiscardAfterSaveFailure $message)) {
+                $eventArgs.Cancel = $true
+                $script:Closing = $false
+                Set-PilotFeedback 'The window was kept open because the latest changes could not be saved. Save or export to another location before closing.' -ErrorState
+                return
+            }
         }
-        finally {
-            $script:AnswerTaskState.PowerShell.Dispose()
-            $script:AnswerTaskState = $null
-        }
+        $script:Timer.Stop()
+        Write-PilotLog 'Session closing.'
+    })
+    Set-PilotBusy $false
+    Write-PilotLog ('Ready. Provider={0}; model={1}' -f $script:Session.ProviderName, $script:Session.Model)
+    foreach ($note in @($script:Preferences.MigrationNotes)) { Write-PilotLog $note }
+    if ($script:SettingsReadError) { Set-PilotFeedback $script:SettingsReadError -ErrorState }
+    elseif ($script:LogFailure) { Set-PilotFeedback $script:LogFailure -ErrorState }
+    elseif ($restored) { Set-PilotFeedback 'Your last session was restored. Review the selected draft or continue refining.'; $script:Controls.SaveStateTextBlock.Text = 'Restored from local autosave.' }
+    else { Set-PilotFeedback 'Write your request, choose a provider, then refine it or get an answer.' }
+    if ($script:Session.IncludeFile -and -not $script:Controls.IncludeFileCheckBox.IsChecked) { Set-PilotFeedback 'The saved reference file could not be loaded. File inclusion is off. Choose the file again before using it.' -ErrorState }
+    if ($SmokeTest) {
+        $script:Window.Show()
+        $script:Window.UpdateLayout()
+        $script:Window.Dispatcher.Invoke([Action]{}, [Windows.Threading.DispatcherPriority]::Render)
+        $bitmap = [Windows.Media.Imaging.RenderTargetBitmap]::new([int]$script:Window.Content.ActualWidth, [int]$script:Window.Content.ActualHeight, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+        $visual = [Windows.Media.DrawingVisual]::new()
+        $drawing = $visual.RenderOpen()
+        $rectangle = [Windows.Rect]::new(0, 0, $script:Window.Content.ActualWidth, $script:Window.Content.ActualHeight)
+        $drawing.DrawRectangle($script:Window.Background, $null, $rectangle)
+        $drawing.DrawRectangle([Windows.Media.VisualBrush]::new($script:Window.Content), $null, $rectangle)
+        $drawing.Close()
+        $bitmap.Render($visual)
+        $encoder = [Windows.Media.Imaging.PngBitmapEncoder]::new()
+        $null = $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+        $imagePath = [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($SmokeReportPath), '.png')
+        $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($imagePath))
+        $stream = [IO.File]::Create($imagePath)
+        try { $encoder.Save($stream) } finally { $stream.Dispose() }
+        $report = @{ Version = $script:Product.version; Controls = $script:Controls.Count; Provider = $script:Session.ProviderName; Model = $script:Session.Model; Restored = $restored; PromptCharacters = $script:Session.BasePrompt.Length; Revisions = $script:Session.Revisions.Count; AnswerCharacters = $script:Session.Answer.Length; Logging = [bool]$script:LogFilePath; LogPath = $script:LogFilePath; Autosave = $script:Preferences.Autosave; Screenshot = $imagePath; Width = $script:Window.ActualWidth; Height = $script:Window.ActualHeight; Error = $script:SettingsReadError }
+        Write-PilotJson $SmokeReportPath $report
+        $script:Window.Close()
+        return
     }
-})
-$null = $window.ShowDialog()
-
-<#
-===============================================================================
-WHAT CHANGED
-===============================================================================
-- [1]  Added $script:Default* / $script:Price* / $script:OpenAIApiBase /
-       $script:ChatEndpointPath constants. All hardcoded model names, pricing
-       figures, and the API endpoint URL now reference these variables.
-- [2]  Added Invoke-WithRetry (exponential backoff, cap 30 s) wrapping every
-       Invoke-RestMethod call. Retries on HTTP 429/502/503/504 and timeouts.
-       All Invoke-RestMethod calls now include -TimeoutSec 120.
-- [3]  Added $script:CancelRequested flag. CancelButton enables during a run
-       and sets the flag; Invoke-OpenAIRefinement checks it before each
-       iteration and breaks early, returning whatever was collected.
-- [4]  Invoke-OpenAIRefinement updates FinalPromptTextBox and calls Show-Status
-       after every completed iteration. AcceptIterationButton copies the current
-       draft to PromptTextBox and sets the cancel flag to skip remaining iters.
-       A WPF dispatcher yield between iterations lets both buttons register.
-- [5]  Added Get-TokenEstimate helper. Invoke-OpenAIRefinement estimates tokens
-       and cost before the loop; if cost > $0.05 it shows a Yes/No confirmation.
-       Run-Refinement guards against a $null result from a cancelled run.
-- [6]  Added SavePresetButton / LoadPresetButton. Presets (Model, Iterations,
-       Goals, ProjectContext) are saved as JSON under a /presets subfolder.
-       Load validates that all expected keys exist before applying them.
-- [7]  Added $script:LogFilePath. LogToFileCheckBox prompts for a .log path
-       when checked; Append-Log writes every line there via Add-Content.
-       Unchecking clears the path and disables file logging.
-- [8]  ConvertTo-Json changed from -Depth 5 to -Depth 10. Prompts longer than
-       32,000 characters throw a descriptive error. File references are validated
-       (must exist and be < 512 KB) before being included in the API payload.
-- [9]  Added Get-ApiKey: prefers $script:SessionApiKey, falls back to
-       $env:OPENAI_API_KEY, then shows a WPF PasswordBox modal. The key is
-       held in $script:SessionApiKey only. ClearSessionKeyButton nulls it.
-       Key values are never written to logs, clipboard, or UI text fields.
-- [10] PS version guard (>= 5.1) and Windows platform guard added at the very
-       top of the script, before any assembly loads.
-- [11] Answer mode runs in a background PowerShell pipeline polled by a
-       DispatcherTimer, so the window stays responsive during the API call.
-- [12] Background tasks are cancellable: Cancel stays enabled during a run and
-       stops the background pipeline (Stop-AnswerTask); a stopped pipeline is
-       reported as "Task cancelled.", not as an error. The failure MessageBox
-       moved behind Show-TaskErrorDialog so headless tests can intercept it.
-       Tests live in tests/ (pwsh -STA -File tests/Invoke-Tests.ps1).
-===============================================================================
-#>
+    $null = $script:Window.ShowDialog()
+}
+catch {
+    Write-PilotLog ('Startup failed: ' + $_.Exception.Message)
+    if ($SmokeTest -and $SmokeReportPath) { Write-PilotJson $SmokeReportPath @{ Error = Protect-PilotText $_.Exception.Message $script:KnownSecrets; Version = $script:Product.version } }
+    if (-not $SmokeTest) { [Windows.MessageBox]::Show(('Prompt Pilot could not start: ' + (Protect-PilotText $_.Exception.Message $script:KnownSecrets) + "`n`nLog: " + $script:LogFilePath), 'Prompt Pilot startup error') | Out-Null }
+    throw
+}
+finally {
+    if ($script:OwnsMutex) { if (Test-Path -LiteralPath $script:InstancePath) { Remove-Item -LiteralPath $script:InstancePath -ErrorAction SilentlyContinue }; $script:Mutex.ReleaseMutex() }
+    if ($script:Mutex) { $script:Mutex.Dispose() }
+}

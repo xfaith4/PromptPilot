@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "checkedOn": "2026-10-17",
+  "currency": "USD",
+  "unit": "1000000 tokens",
+  "note": "Standard text token rates, excluding optional tools, taxes and account-specific pricing. Unknown models require explicit custom rates. Cached input is conservatively priced as standard input.",
+  "models": [
+    { "provider": "OpenAI", "model": "gpt-5.4-mini", "input": 0.75, "output": 4.5, "source": "https://developers.openai.com/api/docs/models/gpt-5.4-mini" },
+    { "provider": "OpenAI", "model": "gpt-5-mini", "input": 0.25, "output": 2.0, "source": "https://developers.openai.com/api/docs/models/gpt-5-mini" },
+    { "provider": "Anthropic", "model": "claude-sonnet-5-5", "input": 2.0, "output": 10.0, "source": "https://platform.claude.com/docs/en/models/sonnet-5-5/overview" },
+    { "provider": "Anthropic", "model": "claude-opus-5-5", "input": 4.0, "output": 20.0, "source": "https://platform.claude.com/docs/en/models/opus-5-5/overview" }
+  ]
+}

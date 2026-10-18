@@ -1,0 +1,38 @@
+name: Windows product checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned test and packaging tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module ps2exe -RequiredVersion 1.0.17 -Scope CurrentUser -Force
+      - name: Test native Windows workflows
+        run: .\tests\Invoke-Tests.ps1
+      - name: Build and smoke-test portable EXE
+        run: .\tools\Build-PortableExe.ps1 -SkipTests
+      - name: Upload candidate and local verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: prompt-pilot-windows-candidate
+          if-no-files-found: warn
+          path: |
+            dist/*.zip
+            dist/*.sha256
+            build/package-smoke-*/smoke.json
+            build/package-smoke-*/smoke.png

@@ -1,136 +1,86 @@
+#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$SourceScript = '',
-    [string]$XamlPath = '',
     [string]$OutputRoot = '',
     [string]$OutputBaseName = 'Prompt_Pilot',
-    [string]$ProductName = 'Prompt Pilot',
-    [string]$Description = 'Portable desktop tool for refining prompts and running tasks against configurable AI providers.',
-    [string]$Version = '0.2.0',
-    [string]$Company = 'Prompt Pilot Project',
-    [string]$IconPath = ''
+    [switch]$SkipTests,
+    [string]$CertificateThumbprint = ''
 )
-
 $ErrorActionPreference = 'Stop'
-
-$scriptRoot = if ($PSScriptRoot) {
-    $PSScriptRoot
-}
-else {
-    Split-Path -Parent $PSCommandPath
-}
-
-if ([string]::IsNullOrWhiteSpace($SourceScript)) {
-    $SourceScript = Join-Path $scriptRoot '..\Prompt_Pilot.Wpf.ps1'
-}
-
-if ([string]::IsNullOrWhiteSpace($XamlPath)) {
-    $XamlPath = Join-Path $scriptRoot '..\Prompt_Pilot.MainWindow.xaml'
-}
-
-if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
-    $OutputRoot = Join-Path $scriptRoot '..\dist'
-}
-
-if ([string]::IsNullOrWhiteSpace($IconPath)) {
-    $IconPath = Join-Path $scriptRoot '..\assets\prompt-pilot.ico'
-}
-
-function Resolve-NormalizedPath {
-    param([Parameter(Mandatory)][string]$Path)
-
-    return [System.IO.Path]::GetFullPath($Path)
-}
-
-function Assert-FileExists {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$Label
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "$Label not found: $Path"
+if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'Build the portable app on Windows.' }
+$root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'PromptPilot.Core.ps1')
+$product = Read-PilotJson (Join-Path $root 'data/product.json')
+if (-not $OutputRoot) { $OutputRoot = Join-Path $root 'dist' }
+$OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
+$null = [IO.Directory]::CreateDirectory($OutputRoot)
+if ($OutputBaseName -notmatch '^[A-Za-z0-9_-]+$') { throw 'OutputBaseName must be a simple file name.' }
+$module = Get-Module -ListAvailable ps2exe | Where-Object { $_.Version -eq [version]$product.ps2exeVersion } | Select-Object -First 1
+if (-not $module) { throw ('Install the pinned build tool: Install-Module ps2exe -RequiredVersion {0} -Scope CurrentUser' -f $product.ps2exeVersion) }
+Import-Module $module.Path -Force
+if (-not $SkipTests) {
+    $testRunspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $testRunspace.ApartmentState = 'STA'
+    $testRunspace.Open()
+    $testPipeline = [Management.Automation.PowerShell]::Create()
+    $testPipeline.Runspace = $testRunspace
+    try {
+        $null = $testPipeline.AddScript({
+            param($Path)
+            Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+            Import-Module Pester -MinimumVersion 5.0
+            $result = Invoke-Pester -Path $Path -PassThru -Output Normal
+            [pscustomobject]@{ Passed = $result.PassedCount; Failed = $result.FailedCount; FailedItems = @($result.Failed | ForEach-Object { $_.ExpandedName + ': ' + $_.ErrorRecord }) }
+        }).AddArgument((Join-Path $root 'tests'))
+        $testResults = @($testPipeline.Invoke())
+        if ($testPipeline.HadErrors -or -not $testResults.Count) { throw ('Windows test execution failed: ' + (@($testPipeline.Streams.Error) -join '; ')) }
+        $testSummary = $testResults[-1]
+        if ($testSummary.Failed -or $testSummary.Passed -lt 1) { throw ('The Windows regression suite failed: ' + ($testSummary.FailedItems -join '; ')) }
+        Write-Host ('Windows regression suite: {0} passed, {1} failed.' -f $testSummary.Passed, $testSummary.Failed)
     }
+    finally { $testPipeline.Dispose(); $testRunspace.Dispose() }
 }
 
-$sourceScriptPath = Resolve-NormalizedPath -Path $SourceScript
-$xamlSourcePath = Resolve-NormalizedPath -Path $XamlPath
-$outputRootPath = Resolve-NormalizedPath -Path $OutputRoot
-
-Assert-FileExists -Path $sourceScriptPath -Label 'Source script'
-Assert-FileExists -Path $xamlSourcePath -Label 'XAML file'
-
-if ($IconPath) {
-    $iconSourcePath = Resolve-NormalizedPath -Path $IconPath
-    Assert-FileExists -Path $iconSourcePath -Label 'Icon file'
-}
-else {
-    $iconSourcePath = $null
-}
-
+$stage = Join-Path $OutputRoot ('.staging-' + [guid]::NewGuid().ToString('N'))
+$null = [IO.Directory]::CreateDirectory($stage)
 try {
-    Import-Module ps2exe -ErrorAction Stop | Out-Null
+    $exe = Join-Path $stage 'Prompt_Pilot.exe'
+    Invoke-PS2EXE -inputFile (Join-Path $root 'Prompt_Pilot.Wpf.ps1') -outputFile $exe -title 'Prompt Pilot' -description 'Refine coding-agent prompts and preserve your work.' -product 'Prompt Pilot' -company 'Prompt Pilot contributors' -version $product.fileVersion -STA -noConsole -DPIAware -supportOS -x64 -iconFile (Join-Path $root 'assets/prompt-pilot.ico') | Out-Host
+    foreach ($file in @('PromptPilot.Core.ps1', 'Prompt_Pilot.MainWindow.xaml', 'Start Prompt Pilot.cmd', 'Start-PromptPilot.ps1', 'README.md', 'LICENSE', 'CHANGELOG.md', 'ROADMAP.md')) { Copy-Item -LiteralPath (Join-Path $root $file) -Destination (Join-Path $stage $file) }
+    foreach ($directory in @('data', 'assets')) { Copy-Item -LiteralPath (Join-Path $root $directory) -Destination (Join-Path $stage $directory) -Recurse }
+    $null = [IO.Directory]::CreateDirectory((Join-Path $stage 'docs'))
+    foreach ($file in @('PRIVACY.md', 'RELEASE.md', 'VALIDATION.md', 'example-session.png')) { Copy-Item -LiteralPath (Join-Path $root ('docs/' + $file)) -Destination (Join-Path $stage ('docs/' + $file)) }
+    $signature = 'NotSigned'
+    if ($CertificateThumbprint) {
+        $certificate = Get-Item -LiteralPath ('Cert:/CurrentUser/My/' + $CertificateThumbprint)
+        if (-not $certificate.HasPrivateKey -or $certificate.NotAfter -lt (Get-Date)) { throw 'The signing certificate is expired or has no private key.' }
+        $signed = Set-AuthenticodeSignature -FilePath $exe -Certificate $certificate -TimestampServer 'http://timestamp.digicert.com'
+        if ($signed.Status -ne 'Valid') { throw ('Code signing failed: ' + $signed.StatusMessage) }
+        $signature = 'Valid'
+    }
+    $validationDir = Join-Path $root ('build/package-smoke-' + [guid]::NewGuid().ToString('N'))
+    $null = [IO.Directory]::CreateDirectory($validationDir)
+    $reportPath = Join-Path $validationDir 'smoke.json'
+    $dataDir = Join-Path $validationDir 'data'
+    $arguments = @('-SmokeTest', '-DataDirectory', ('"' + $dataDir + '"'), '-SmokeReportPath', ('"' + $reportPath + '"'))
+    $process = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $validationDir -PassThru
+    if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id -Force; throw 'The isolated packaged-app smoke timed out.' }
+    if (-not (Test-Path -LiteralPath $reportPath)) { throw 'The packaged app did not create its startup report.' }
+    $smoke = Read-PilotJson $reportPath
+    if ($smoke.Error -or -not $smoke.Logging -or $smoke.Controls -lt 50 -or $smoke.Version -ne $product.version) { throw ('Packaged-app smoke failed: ' + $smoke.Error) }
+    if (Test-Path -LiteralPath (Join-Path $stage 'logs')) { Remove-Item -LiteralPath (Join-Path $stage 'logs') -Recurse -Force }
+    $manifest = @{ Product = $product.name; Version = $product.version; FileVersion = $product.fileVersion; BuiltAtUtc = [DateTime]::UtcNow.ToString('o'); PowerShell = $PSVersionTable.PSVersion.ToString(); BuildTool = ('ps2exe ' + $product.ps2exeVersion); EntryExe = 'Prompt_Pilot.exe'; SigningStatus = $signature; PackagedStartupSmoke = 'Passed'; SmokeEvidence = 'Build-local package-smoke report, retained in the source build directory and CI artifact'; Files = @() }
+    foreach ($file in Get-ChildItem -LiteralPath $stage -File -Recurse | Sort-Object FullName) { $manifest.Files += @{ Path = $file.FullName.Substring($stage.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, [char]'/'); Sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } }
+    Write-PilotJson (Join-Path $stage 'package.json') $manifest
+    $checksums = @(Get-ChildItem -LiteralPath $stage -File -Recurse | Sort-Object FullName | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.FullName.Substring($stage.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, [char]'/') })
+    [IO.File]::WriteAllLines((Join-Path $stage 'SHA256SUMS.txt'), [string[]]$checksums, [Text.UTF8Encoding]::new($false))
+    $destination = Join-Path $OutputRoot $OutputBaseName
+    if (Test-Path -LiteralPath $destination) { Move-Item -LiteralPath $destination -Destination ($destination + '.previous-' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff')) }
+    Move-Item -LiteralPath $stage -Destination $destination
+    $zip = Join-Path $OutputRoot ($OutputBaseName + '-' + $product.version + '-win-x64.zip')
+    Compress-Archive -Path (Join-Path $destination '*') -DestinationPath $zip -Force
+    [IO.File]::WriteAllText(($zip + '.sha256'), ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + [IO.Path]::GetFileName($zip)), [Text.UTF8Encoding]::new($false))
+    Write-Host ('Portable artifact verified: ' + $zip)
+    Write-Host ('Signing: ' + $signature + '; packaged startup: Passed; clean-machine/beta acceptance remains in ROADMAP.md.')
 }
-catch {
-    throw 'The ps2exe module is not available in this PowerShell host. Install it for the current host with: Install-Module ps2exe -Scope CurrentUser'
-}
-
-if (-not (Get-Command -Name Invoke-PS2EXE -ErrorAction SilentlyContinue)) {
-    throw 'Invoke-PS2EXE is not available after importing ps2exe. Try running this build script in pwsh and confirm the module is installed there.'
-}
-
-$outputDirectory = Join-Path $outputRootPath $OutputBaseName
-$outputExePath = Join-Path $outputDirectory ($OutputBaseName + '.exe')
-$outputXamlPath = Join-Path $outputDirectory 'Prompt_Pilot.MainWindow.xaml'
-
-if (Test-Path -LiteralPath $outputDirectory) {
-    Remove-Item -LiteralPath $outputDirectory -Recurse -Force
-}
-
-New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-
-$ps2exeParams = @{
-    inputFile   = $sourceScriptPath
-    outputFile  = $outputExePath
-    title       = $ProductName
-    description = $Description
-    company     = $Company
-    product     = $ProductName
-    version     = $Version
-    STA         = $true
-    noConsole   = $true
-    noOutput    = $true
-    noError     = $false
-    DPIAware    = $true
-    supportOS   = $true
-    x64         = $true
-}
-
-if ($iconSourcePath) {
-    $ps2exeParams.iconFile = $iconSourcePath
-}
-
-Write-Host "Compiling $sourceScriptPath" -ForegroundColor Cyan
-Invoke-PS2EXE @ps2exeParams
-
-Copy-Item -LiteralPath $xamlSourcePath -Destination $outputXamlPath -Force
-
-$packageManifest = [ordered]@{
-    ProductName = $ProductName
-    Version     = $Version
-    BuiltAtUtc  = (Get-Date).ToUniversalTime().ToString('o')
-    EntryExe    = [System.IO.Path]::GetFileName($outputExePath)
-    XamlFile    = [System.IO.Path]::GetFileName($outputXamlPath)
-    SourceScript = [System.IO.Path]::GetFileName($sourceScriptPath)
-}
-
-$packageManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $outputDirectory 'package.json') -Encoding UTF8
-
-Write-Host ''
-Write-Host 'Portable package created:' -ForegroundColor Green
-Write-Host "  $outputDirectory"
-Write-Host ''
-Write-Host 'Contents:' -ForegroundColor Green
-Write-Host "  - $([System.IO.Path]::GetFileName($outputExePath))"
-Write-Host "  - $([System.IO.Path]::GetFileName($outputXamlPath))"
-Write-Host '  - package.json'
+finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }

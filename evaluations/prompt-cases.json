@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "description": "Synthetic acceptance cases. Automated checks establish constraint preservation, not a universal claim of improved prompt quality. Review recorded outputs before release.",
+  "cases": [
+    {
+      "id": "csv-acceptance",
+      "profile": "Coding task",
+      "prompt": "Return exactly two numbered acceptance criteria for a CSV parser fix that supports quoted commas and preserves blank rows. Do not write implementation code or add dependencies.",
+      "required": [
+        "(?i)CSV",
+        "(?i)quoted.{0,20}comma",
+        "(?i)blank.{0,12}row",
+        "(?i)(two|2).{0,25}(numbered|acceptance|criteria)",
+        "(?i)(no|not|without).{0,35}(dependenc|packages)"
+      ],
+      "forbidden": [
+        "(?i)PowerShell",
+        "(?i)Python"
+      ]
+    },
+    {
+      "id": "python-contract",
+      "profile": "Coding task",
+      "prompt": "Refactor parse_event in parser.py using Python 3.11 only. Preserve the return schema. No new packages. Add three focused regression tests.",
+      "required": [
+        "parse_event",
+        "parser\\.py",
+        "3\\.11",
+        "(?i)(preserv|unchanged).{0,35}(return|schema)",
+        "(?i)(three|3).{0,25}(test)",
+        "(?i)(no|not|without).{0,30}(packages|dependenc)"
+      ],
+      "forbidden": [
+        "(?i)PowerShell",
+        "(?i)Node\\.js"
+      ]
+    },
+    {
+      "id": "read-only-investigation",
+      "profile": "Investigation",
+      "prompt": "Investigate why the nightly import stopped. Start with recent changes and logs. Keep the investigation read-only. Do not restart services. Separate confirmed evidence from hypotheses.",
+      "required": [
+        "(?i)recent.{0,20}changes",
+        "(?i)logs",
+        "(?i)read.only",
+        "(?i)(not|no|without).{0,25}restart",
+        "(?i)hypothes"
+      ],
+      "forbidden": [
+        "(?i)PowerShell"
+      ]
+    },
+    {
+      "id": "scope-and-path",
+      "profile": "Coding task",
+      "prompt": "Fix only src/parser.ts and tests/parser.test.ts. Preserve unrelated edits. Do not change the public API. Explain the change in at most 100 words.",
+      "required": [
+        "src/parser\\.ts",
+        "tests/parser\\.test\\.ts",
+        "(?i)unrelated",
+        "(?i)public API",
+        "100"
+      ],
+      "forbidden": [
+        "(?i)PowerShell"
+      ]
+    },
+    {
+      "id": "general-copy",
+      "profile": "General task",
+      "prompt": "Improve onboarding copy for a small tool. Keep the final copy under 120 words. Preserve a calm tone. Do not assume a technology stack or invent product features.",
+      "required": [
+        "120",
+        "(?i)calm",
+        "(?i)(not|no|without).{0,50}(stack|technolog)",
+        "(?i)(not|no|without).{0,50}(invent|features)"
+      ],
+      "forbidden": [
+        "(?i)PowerShell",
+        "(?i)React"
+      ]
+    },
+    {
+      "id": "keep-unknowns",
+      "profile": "Investigation",
+      "prompt": "Review the supplied incident notes. Report the confirmed facts, unresolved questions and next evidence to collect. Do not infer a root cause or make production changes.",
+      "required": [
+        "(?i)confirmed",
+        "(?i)(unresolved|open).{0,20}questions",
+        "(?i)evidence",
+        "(?i)(not|no|without).{0,50}(root cause|production)"
+      ],
+      "forbidden": [
+        "(?i)PowerShell",
+        "(?i)(not|no).{0,35}(recommend|draft).{0,40}(remediation|fixes|rollbacks)"
+      ]
+    },
+    {
+      "id": "messy-coding-request",
+      "profile": "Coding task",
+      "prompt": "csv parser is messing up quoted commas. keep blank rows too. don't pull in new libraries. fix src/parser.ts + tests/parser.test.ts only, preserve unrelated edits, test the fix and keep the diff small.",
+      "required": [
+        "src/parser\\.ts",
+        "tests/parser\\.test\\.ts",
+        "(?i)quoted.{0,20}comma",
+        "(?i)blank.{0,12}row",
+        "(?i)unrelated",
+        "(?i)(small|minimal|focused).{0,20}(diff|change)|(?i)(diff|change).{0,20}(small|minimal|focused)",
+        "(?i)(no|not|without|don['\u2019]t).{0,40}(librar|dependenc|packages)"
+      ],
+      "forbidden": [
+        "(?i)PowerShell"
+      ]
+    }
+  ]
+}
