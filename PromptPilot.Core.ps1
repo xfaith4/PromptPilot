@@ -191,17 +191,32 @@ function Protect-PilotSecret {
     param([string]$PlainText)
     if ([string]::IsNullOrWhiteSpace($PlainText)) { return $null }
     if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'Saving credentials requires Windows user protection.' }
-    return ConvertFrom-SecureString (ConvertTo-SecureString $PlainText -AsPlainText -Force)
+    # Use the same CurrentUser DPAPI/UTF-16 hex format as ConvertFrom-SecureString.
+    # Embedded/clean hosts can fail to auto-load Microsoft.PowerShell.Security.
+    Add-Type -AssemblyName System.Security -ErrorAction Stop
+    $clear = [Text.Encoding]::Unicode.GetBytes($PlainText)
+    try {
+        $protected = [Security.Cryptography.ProtectedData]::Protect($clear, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return ([BitConverter]::ToString($protected)).Replace('-', '').ToLowerInvariant()
+    }
+    finally { [Array]::Clear($clear, 0, $clear.Length) }
 }
 
 function Unprotect-PilotSecret {
     param([string]$ProtectedText)
     if ([string]::IsNullOrWhiteSpace($ProtectedText)) { return $null }
     if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'Saved credentials can only be opened by the Windows user who saved them.' }
-    $secure = ConvertTo-SecureString $ProtectedText
-    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+    Add-Type -AssemblyName System.Security -ErrorAction Stop
+    $clear = $null
+    try {
+        if ($ProtectedText.Length % 2 -ne 0 -or $ProtectedText -notmatch '\A[0-9a-fA-F]+\z') { throw 'Invalid protected credential format.' }
+        $protected = New-Object byte[] ($ProtectedText.Length / 2)
+        for ($index = 0; $index -lt $protected.Length; $index++) { $protected[$index] = [Convert]::ToByte($ProtectedText.Substring($index * 2, 2), 16) }
+        $clear = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [Text.Encoding]::Unicode.GetString($clear)
+    }
+    catch { throw 'The saved API key could not be decrypted for this Windows user. Enter a replacement in Providers and API keys.' }
+    finally { if ($null -ne $clear) { [Array]::Clear($clear, 0, $clear.Length) } }
 }
 
 function Get-PilotCredential {

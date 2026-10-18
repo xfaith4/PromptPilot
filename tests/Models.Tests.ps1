@@ -154,14 +154,14 @@ Wait-PilotDesktopIdle
     }
     It 'opens the real manager, discovers models and requires opt-in before paid comparison' {
         $server = Start-PilotMockServer -Body '{"data":[{"id":"gpt-5.4-mini"},{"id":"candidate-test"}]}'
-        $dir = Join-Path $TestDrive 'manager-ui'; $p = New-PilotPreferences; $p.ModelManagement.AutoCheck = $false
+        $dir = Join-Path $TestDrive 'manager-ui'; $p = New-PilotPreferences; $p.ModelManagement.AutoCheck = $false; $p.Keys.OpenAI = Protect-PilotSecret 'test-key'
         Save-PilotPreferences (Join-Path $dir 'settings.json') $p
         $scenario = @'
 $script:MockProviders = Get-PilotProviders
 $script:MockProviders.OpenAI.ApiBase = '__BASE__'
 $script:MockProviders.OpenAI.ModelsUri = '__BASE__/models'
 function Get-PilotProviders { return $script:MockProviders }
-$script:SessionKeys.OpenAI = 'test-key'
+$script:SessionKeys.Clear()
 $script:ManagerResult = $null
 $timer = [Windows.Threading.DispatcherTimer]::new()
 $timer.Interval = [TimeSpan]::FromMilliseconds(100)

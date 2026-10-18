@@ -1,6 +1,28 @@
 # 1.0.0-rc.2 validation record
 
-## Final local verification
+## Saved-key loading correction (2026-10-18)
+
+A user report exposed a security-module autoload failure before model discovery
+could read a saved API key. Both discovery dialogs previously used the same
+ConvertTo-SecureString path. Saving/reading keys now uses Windows CurrentUser
+DPAPI directly, keeping the existing UTF-16/hex ciphertext format. No key
+replacement or settings migration is required.
+
+The rebuilt candidate passes **66 native Windows tests** and packaged startup.
+New checks cover old/new ciphertext interoperability, a fresh runspace without
+security cmdlets, and malformed-key errors. Both actual native discovery-dialog
+tests now use saved encrypted keys rather than session keys. The exact owner's
+module-resolution environment was not reproduced by the minimal compiled probe;
+the corrected path removes that module dependency.
+
+UI Automation then exercised both buttons in the **actual rebuilt EXE** using
+an existing encrypted Anthropic credential in an isolated data directory.
+Load models returned 14 IDs; Check available models now completed successfully.
+Only metadata was requested (zero prompts); the owner's settings hash was unchanged
+and encrypted fixture copies were removed. Evidence:
+`build/credential-packaged-discovery.json`.
+
+## Prior rc.2 local verification baseline
 
 - Native Windows PowerShell 5.1: **63 passed, 0 failed**.
 - Linux PowerShell 7.6: **51 passed, 0 failed**; twelve Windows UI tests excluded.

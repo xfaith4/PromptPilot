@@ -2,6 +2,12 @@
 
 ## 1.0.0-rc.2
 
+- Saved-key loading correction (2026-10-18): use CurrentUser DPAPI directly,
+  preserving existing encrypted keys while avoiding security-module autoload
+  failures in model discovery and other credential-backed actions.
+- Current-product offline web/portfolio demonstration replaces the obsolete
+  five-step presentation, with curated samples and explicit validation boundaries.
+
 - Independent refinement/answer defaults and explicit pins; older choices migrate
   without changing the model in restored sessions.
 - Cached weekly model discovery, manual checks and optional discovery-only Windows task tooling.

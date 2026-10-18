@@ -195,7 +195,7 @@ $cancel = $script:Controls.CancelButton.TranslatePoint([Windows.Point]::new(0,0)
             @{ Status = 200; Body = '{"data":[{"id":"claude-opus-5-5"}],"has_more":false}' },
             @{ Status = 200; Body = '{"content":[{"type":"text","text":"PROMPT_PILOT_OK"}],"usage":{"input_tokens":10,"output_tokens":5}}' })
         $dataDir = Join-Path $TestDrive 'settings-dialog-data'
-        $preferences = New-PilotPreferences; $preferences.ActiveProvider = 'Anthropic'; $preferences.Providers.Anthropic.Model = 'claude-opus-5-5'
+        $preferences = New-PilotPreferences; $preferences.ActiveProvider = 'Anthropic'; $preferences.Providers.Anthropic.Model = 'claude-opus-5-5'; $preferences.Keys.Anthropic = Protect-PilotSecret 'test-key'; $preferences.ModelManagement.AutoCheck = $false
         Save-PilotPreferences (Join-Path $dataDir 'settings.json') $preferences
         $scenarioPath = Join-Path $TestDrive 'settings-dialog.ps1'
         $scenario = @'
@@ -203,7 +203,7 @@ $script:MockProviders = Get-PilotProviders
 $script:MockProviders.Anthropic.ApiBase = '__MOCK_BASE__'
 $script:MockProviders.Anthropic.ModelsUri = '__MOCK_BASE__/models'
 function Get-PilotProviders { return $script:MockProviders }
-$script:SessionKeys.Anthropic = 'test-key'
+$script:SessionKeys.Clear()
 $script:DialogStage = 0; $script:DialogError = ''; $script:LoadedModels = 0; $script:TestPassed = $false
 $script:DialogDeadline = [DateTime]::UtcNow.AddSeconds(15)
 $script:DialogTimer = [Windows.Threading.DispatcherTimer]::new()

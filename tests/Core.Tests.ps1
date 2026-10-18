@@ -365,3 +365,50 @@ Describe 'Local documents, session recovery and comparison' {
         (@($diff | Where-Object Kind -ne Removed).Text -join "`n") | Should -Be $right
     }
 }
+
+Describe 'Windows saved-key compatibility without security-module autoloading' -Tag 'WindowsUI' {
+    It 'reads existing PowerShell DPAPI ciphertext and writes backward-compatible ciphertext' {
+        $text = 'synthetic-key-with-unicode-' + [char]0x03a9
+        $legacy = Microsoft.PowerShell.Security\ConvertFrom-SecureString (Microsoft.PowerShell.Security\ConvertTo-SecureString $text -AsPlainText -Force)
+        (Unprotect-PilotSecret $legacy) | Should -Be $text
+        $new = Protect-PilotSecret $text
+        $secure = Microsoft.PowerShell.Security\ConvertTo-SecureString $new
+        $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) | Should -Be $text }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+    }
+    It 'opens an existing saved credential with security cmdlets unavailable in a fresh host' {
+        $legacy = Microsoft.PowerShell.Security\ConvertFrom-SecureString (Microsoft.PowerShell.Security\ConvertTo-SecureString 'synthetic-existing-key' -AsPlainText -Force)
+        $initial = [Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+        $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($initial)
+        $runspace.Open()
+        $pipeline = [Management.Automation.PowerShell]::Create(); $pipeline.Runspace = $runspace
+        try {
+            $null = $pipeline.AddScript({
+                param($Core, $Cipher)
+                Import-Module Microsoft.PowerShell.Utility, Microsoft.PowerShell.Management
+                $PSModuleAutoLoadingPreference = 'None'
+                . $Core
+                $unavailable = @((Get-Command -CommandType Cmdlet) | Where-Object Name -eq 'ConvertTo-SecureString').Count -eq 0
+                $preferences = New-PilotPreferences
+                $preferences.Keys.Anthropic = $Cipher
+                $credential = Get-PilotCredential Anthropic $preferences @{}
+                $roundTrip = Unprotect-PilotSecret (Protect-PilotSecret 'synthetic-new-key')
+                [pscustomobject]@{ SecurityCmdletUnavailable = $unavailable; LegacyRead = ($credential.Key -eq 'synthetic-existing-key'); NewRead = ($roundTrip -eq 'synthetic-new-key') }
+            }).AddArgument($script:CorePath).AddArgument($legacy)
+            $result = @($pipeline.Invoke())[-1]
+            $pipeline.HadErrors | Should -BeFalse -Because ($pipeline.Streams.Error -join '; ')
+            $result.SecurityCmdletUnavailable | Should -BeTrue
+            $result.LegacyRead | Should -BeTrue
+            $result.NewRead | Should -BeTrue
+        } finally { $pipeline.Dispose(); $runspace.Dispose() }
+    }
+    It 'reports malformed or unreadable keys without exposing protected content' {
+        foreach ($cipher in @('not-a-secret-to-echo', '010203')) {
+            try { $null = Unprotect-PilotSecret $cipher; throw 'Expected decryption failure' }
+            catch { $_.Exception.Message | Should -Be 'The saved API key could not be decrypted for this Windows user. Enter a replacement in Providers and API keys.' }
+        }
+        (Protect-PilotSecret '') | Should -BeNullOrEmpty
+        (Unprotect-PilotSecret '') | Should -BeNullOrEmpty
+    }
+}
