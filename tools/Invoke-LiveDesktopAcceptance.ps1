@@ -18,7 +18,7 @@ foreach ($providerName in $Providers) {
     $name = Resolve-PilotProvider $providerName
     $provider = (Get-PilotProviders)[$name]
     $model = $preferences.Providers[$name].Model
-    $entry = @{ Provider = $name; Model = $model; Status = 'Pending'; Error = '' }
+    $entry = @{ Provider = $name; Model = $model; AnswerModel = Get-PilotRoleModel $preferences $name Answer; Status = 'Pending'; Error = '' }
     $report.Providers += $entry
     try {
         if (-not (Get-PilotPricing $name $model $preferences.PricingOverrides).Known) { throw 'No verified/configured pricing for a bounded live desktop run.' }
@@ -28,7 +28,9 @@ foreach ($providerName in $Providers) {
         $dataDir = Join-Path $OutputDirectory ($name + '-profile-' + [guid]::NewGuid().ToString('N'))
         $isolated = New-PilotPreferences
         $isolated.ActiveProvider = $name
-        $isolated.Providers[$name].Model = $model
+        Set-PilotRoleModel $isolated $name Refine $model $false
+        Set-PilotRoleModel $isolated $name Answer (Get-PilotRoleModel $preferences $name Answer) $false
+        $isolated.ModelManagement.AutoCheck = $false
         $isolated.PricingOverrides = $preferences.PricingOverrides
         $ciphertext = Get-PilotValue $preferences.Keys $name
         if ($ciphertext) { $isolated.Keys[$name] = $ciphertext }
@@ -58,7 +60,7 @@ Save-PilotAutosave
     Status = $(if ($formatPassed) { 'Passed' } else { 'Failed' })
     NonblockingStart = $busy; StartMilliseconds = $startMilliseconds
     Original = $script:Controls.PromptTextBox.Text; Refined = $refined; Answer = $answer
-    Revisions = $script:Session.Revisions.Count; RefineUsage = $refineUsage; AnswerUsage = $script:Session.Usage
+    RefinementModel = $script:Session.RefinementModel; AnswerModel = $script:Session.AnswerModel; Revisions = $script:Session.Revisions.Count; RefineUsage = $refineUsage; AnswerUsage = $script:Session.Usage
     SessionPath = (Join-Path $script:SessionsDirectory ($script:Session.Id + '.json'))
 }
 '@ -replace '(?m)^\+', ''

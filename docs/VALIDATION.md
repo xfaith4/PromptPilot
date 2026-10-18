@@ -1,79 +1,72 @@
-# 1.0.0-rc.1 validation record
+# 1.0.0-rc.2 validation record
 
-This record distinguishes local implementation, mocked execution, live generation
-and acceptance that needs an independent environment or human feedback.
+## Final local verification
 
-## Automated Windows verification
+- Native Windows PowerShell 5.1: **63 passed, 0 failed**.
+- Linux PowerShell 7.6: **51 passed, 0 failed**; twelve Windows UI tests excluded.
+- Tests cover existing provider/workflow/persistence behavior plus separate role
+  routing, old settings/session migration, catalog metadata/cache/backoff, explicit
+  paid opt-in, repeated comparisons, per-run/monthly ceilings and pre-dispatch
+  persistent reservations. Unknown/interrupted/server-error liability is retained.
+- Real WPF controls execute HTTP-backed comparisons, refuse a failing candidate,
+  accept a qualifying controlled result for one role and roll back. Active-session
+  model choices survive adoption. Pins, expired evidence, changed prices/capabilities
+  and changed baselines block acceptance. Test discovery/container errors fail the runner.
 
-Native Windows PowerShell 5.1: **41 tests passed**. Coverage includes the shared
-HTTP engine, per-provider payload/output caps, fractional-dollar budget accounting,
-retry and Retry-After handling, active cancellation, missing usage, JSON migration,
-atomic backups, document limits and credential-free session/export schemas.
+Evidence: `build/model-windows-final-tests.txt` and `build/model-headless-final-tests.txt`.
+The portable build reruns the native suite and records its count in package.json.
 
-WPF checks operate the actual Refine, Use-prompt and Cancel buttons, load model IDs
-and run a generation test through the provider dialog against loopback servers,
-verify nonblocking startup, preserve revisions after cancellation, restore sessions
-and keep primary actions inside the minimum supported window. A failed close-time
-autosave keeps the window open when the user declines to discard changes.
+## Live discovery and independent role routing
 
-PowerShell 7.6 on Linux: **33 headless tests passed**; the eight Windows-only UI
-tests are excluded explicitly. Linux is a test environment, not a supported GUI platform.
+Live metadata returned 14 Anthropic model IDs and 139 OpenAI IDs for the tested
+accounts. These counts describe availability at the recorded check, not universal
+access or generation support for every listed model.
 
-## Live provider evidence
+Actual final-source desktop Refine -> Answer -> reopen passed with independent models:
 
-All prompts were synthetic and public, not the owner's real project instructions.
+| Provider | Refinement | Answer | Result |
+| --- | --- | --- | --- |
+| Anthropic | claude-sonnet-5-5 | claude-opus-5-5 | Passed |
+| OpenAI | gpt-5-mini | gpt-5.4-mini | Passed |
 
-| Provider/model | Live Refine -> Answer | Actual desktop buttons and restart |
-| --- | --- | --- |
-| Anthropic `claude-opus-5-5` | Passed | Passed |
-| OpenAI `gpt-5-mini` (saved configuration) | Passed | Passed |
-| Anthropic `claude-sonnet-5-5` (new-profile default) | Passed | Core acceptance |
-| OpenAI `gpt-5.4-mini` (new-profile default) | Passed | Core acceptance |
-| GitHub Models `openai/gpt-4.1` | Not attempted | Preview gate remains open |
+The final desktop check used about $0.01705 in estimated generation cost. Synthetic
+public prompts were used, original requests survived and saved answers were restored.
+Evidence: `build/model-live/desktop-final/desktop-acceptance.json`.
 
-GitHub's documented catalog endpoint returned HTTP 200 with a `text/plain` body
-of `OK`, including with JSON/version headers. This is a failed metadata check,
-not a successful model list and not a failed generation. No unpriced generation
-was sent. Account-appropriate pricing and live GitHub generation remain open.
+## Live comparative evaluation
 
-Local evidence:
+Each role completed twelve synthetic tasks with three repetitions:
 
-- `build/live-acceptance-final/acceptance.json` and `requests.log`.
-- `build/live-desktop-final/desktop-acceptance.json`, saved synthetic sessions and screenshots.
-- `build/default-provider-check/evidence/acceptance.json`.
+- Answer: 36 paired tasks, 73 requests including the probe; about $0.05225.
+- Refinement: 36 paired tasks, 181 requests including fixed-model downstream
+  answers, original-request controls and the probe; about $0.33233.
+- Both returned **Keep current**. The answer candidate was cheaper/faster but
+  failed strict output checks more often. Failed tasks/actual outputs are retained.
+  Exact checks include capitalization and punctuation; these results do not establish
+  that a model is generally superior or inferior for real work.
 
-The desktop run verified the original request survived Refine -> Answer, completed
-revisions were saved, and the answer was restored on reopening the session.
-Live generation evidence is bound to the recorded models/accounts and does not
-establish that every model returned by a provider supports this workflow.
+These full comparisons preceded the final correction that retains uncertain HTTP
+server-error spending and the addition of per-call request IDs/token counts. Their exact tested core/engine/corpus is archived in
+`build/model-live/source`, with reports under `build/model-live/data/models/evaluations`.
+Their acceptance fingerprints are intentionally stale against the final core. The
+successful request path is unchanged. The final source passed the complete local
+suite (including this failure path) and the live desktop check above. A final live
+comparison preflight captured usage and request ID, then stopped after one request
+at its $0.005 ceiling with no recommendation. Evidence: `build/model-live/final-preflight.json`.
 
-## Prompt quality
+Owner settings hashes matched before/after isolated verification. Encrypted key
+copies were removed from owned fixtures after use. No real user session prompt was
+sent, no default was promoted in owner settings and no scheduled task was installed.
 
-Seven recorded cases passed explicit constraint checks: CSV acceptance criteria,
-Python version/schema/package constraints, read-only investigation, file/path scope,
-general-copy length/tone, preserving unknowns, and a deliberately messy coding request.
+## Distribution and remaining acceptance
 
-Manual review found one earlier output unnecessarily forbade recommendations when
-the user only forbade making production changes. The refinement policy was corrected
-to preserve permissions as well as prohibitions and avoid expanding already-clear
-requests. The affected case was rerun; the older output remains in prior evidence.
-A regex check was also corrected to recognize `don't` as equivalent to `do not`,
-using the already-recorded output without paying for another generation.
+The optional discovery-only scheduled task passed **WhatIf** validation, which is
+not proof of a registered task executing later. Native artifacts are unsigned unless
+built with a supplied signing certificate. Fresh-profile compiled startup and final
+ZIP/checksum/launcher evidence are retained under build/ and the package manifest.
+Windows UI Automation also opened the Models dialog in the actual compiled EXE,
+verified paid evaluations were initially off and closed its isolated test process.
 
-These checks establish specific constraint preservation. A small beta cohort must
-still assess usefulness on real work before a general prompt-quality claim is made.
-
-## Distribution evidence and limits
-
-The source launcher passed single-instance activation and orderly restart using
-test-owned Windows processes and isolated data. The portable build compiles the
-real EXE, starts it from another working directory with fresh data, verifies its
-startup report and produces a manifest/checksums and ZIP. Build-local evidence is
-under `build/package-smoke-*` and `build/launcher-check-*`.
-
-The candidate is **unsigned** unless built with a supplied valid signing certificate.
-Fresh-data checks were run on the development Windows host; they are not clean-machine
-proof. Hosted GitHub CI has been configured but cannot be claimed passed before the
-reviewed changes are pushed and the workflow actually runs.
-
-See ROADMAP.md for clean-machine/upgrade, beta, signing and GitHub preview gates.
+Hosted CI execution, clean Windows installation/upgrade, broader beta usefulness,
+trusted signing/public distribution and GitHub Models live acceptance remain open
+in ROADMAP.md. No commit, push or stable public release is claimed.

@@ -4,7 +4,7 @@ A Windows desktop workspace for turning rough requests into clear coding-agent
 instructions, reviewing what changed, and optionally getting an answer from the
 same provider. Your original request remains available throughout the session.
 
-**Version 1.0.0-rc.1.** This is a release candidate. See [ROADMAP.md](ROADMAP.md)
+**Version 1.0.0-rc.2.** This is a release candidate. See [ROADMAP.md](ROADMAP.md)
 for verified work and the remaining external release gates.
 
 See [the validation record](docs/VALIDATION.md) for exact live and local proof.
@@ -31,7 +31,8 @@ powershell.exe -NoProfile -STA -File .\Prompt_Pilot.Wpf.ps1
 ## A complete session
 
 1. Open the provider button or **Settings > Providers and API keys**.
-2. Select a provider. Load its model IDs or enter a direct API model ID.
+2. Select a provider and whether the choice is for Refine or Answer. Load model IDs
+   or enter a direct API model ID. Pin a choice to keep recommendations from replacing it.
 3. Enter a key, choosing encrypted storage for this Windows user or session-only
    use. Existing provider environment variables are also supported.
 4. Review token prices. Known models use the dated, sourced catalog; other models
@@ -69,6 +70,54 @@ The default models are suggestions, not an assurance of account access.
 Credential priority: session key, saved encrypted key, provider environment variable.
 Settings migrate the old shared price defaults to the model-specific catalog;
 deliberate old custom rates are retained with an explicit legacy provenance label.
+
+## Future models and default recommendations
+
+Open **Models** or **Settings > Model recommendations**. Refinement and answers
+have independent defaults for each provider. Existing saved selections migrate to
+both roles as pinned; unpin a role explicitly to accept a recommendation.
+
+- Available models are checked weekly for the selected provider while the app is
+  open. This is metadata discovery, with no generation prompt. Cached IDs survive
+  failed checks; a failed attempt backs off for a day. Automatic discovery can be disabled.
+- Choose a role and candidate. Unknown prices require explicit custom rates or a
+  sourced pricing-catalog update. Listing a model does not establish compatibility;
+  the paid comparison begins with a real short-generation probe.
+- Paid evaluations are off initially. Enable them and set both ceilings before
+  running: initially **$1 per comparison** and **$5 per UTC calendar month**.
+  Every probe, baseline, candidate and downstream/control request counts. Spending
+  is reserved on disk before dispatch; uncertain spending is retained after interruption.
+- Comparisons run twelve synthetic tasks three times. Refinement comparisons also
+  test answers under a fixed answer model and compare with the original request.
+  Failed, truncated, incomplete or uncertain comparisons cannot recommend an update.
+- Results show task checks, costs, latency and the reason to adopt or keep a model.
+  Adoption requires your explicit acceptance, fresh matching evidence and an unpinned
+  role. It changes future sessions only; current/restored sessions keep their models.
+  A matching accepted default can be rolled back. There is no automatic adoption.
+
+An API or parameter change can require an application update. New model names do
+not establish compatibility, prices or quality. The twelve controlled tasks measure
+specific behavior; broader usefulness still needs real-user feedback.
+
+Optional tools in the portable package/source checkout:
+
+```powershell
+# Discovery only; -Force bypasses the local schedule/disabled preference explicitly.
+.\tools\Check-ModelUpdates.ps1 -Force
+# Optional weekly discovery while the app is closed (logged-in Windows user).
+.\tools\Install-ModelCheckTask.ps1 -WhatIf
+.\tools\Install-ModelCheckTask.ps1
+# Remove only the task with this name.
+.\tools\Install-ModelCheckTask.ps1 -Remove
+# Also requires paid evaluation to be enabled in the app.
+.\tools\Compare-Models.ps1 -Role Answer -CandidateModel YOUR_MODEL_ID -AllowPaidEvaluation
+```
+
+The app does not install a scheduled task itself. Keep its folder in a stable
+location if you register one. Session-only keys are unavailable to a closed-app check.
+See [the implementation and decision policy](docs/MODEL-MANAGEMENT.md).
+
+![Model comparison results in the actual desktop app](docs/model-recommendations.png)
 
 ## Reference files
 

@@ -146,6 +146,20 @@ Describe 'Shared real HTTP request engine' {
         }
         finally { Stop-PilotMockServer $server }
     }
+    It 'retains possible server-error spending and does not dispatch a retry past the run ceiling' {
+        $server = Start-PilotMockServer -Status 503 -Body '{"error":{"message":"server failed after request receipt"}}'
+        try {
+            $provider = New-PilotMockProvider $server
+            $price = (New-PilotMockBudget).Pricing
+            $messages = @(@{ role = 'user'; content = 'test' })
+            $body = New-PilotChatJson $provider claude-opus-5-5 '' $messages 512
+            $ceiling = Get-PilotCallCeiling $body 512 $price
+            $budget = New-PilotBudget -LimitUsd ($ceiling * 1.5) -Pricing $price
+            { Invoke-PilotChat -Provider $provider -ApiKey test-key -Model claude-opus-5-5 -Messages $messages -MaxOutputTokens 512 -Budget $budget -RetryDelayMs 1 } | Should -Throw '*budget reached*'
+            $budget.UsedUsd | Should -BeGreaterThan 0
+            $server.Requests.Count | Should -Be 1
+        } finally { Stop-PilotMockServer $server }
+    }
     It 'honors Retry-After and does not retry early when the provider requests a long delay' {
         $server = Start-PilotMockServer -Responses @(@{ Status = 429; Body = '{"error":{"message":"rate limited"}}'; RetryAfter = 1 }, @{ Status = 200; Body = $script:ClaudeResponse })
         try {

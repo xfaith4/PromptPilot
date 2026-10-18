@@ -41,7 +41,7 @@
                 <MenuItem Name="MenuSaveSession" Header="Save session _as..." InputGestureText="Ctrl+S" />
                 <MenuItem Name="MenuExportSession" Header="_Export Markdown..." />
             </MenuItem>
-            <MenuItem Header="_Settings"><MenuItem Name="MenuSettingsApiKey" Header="_Providers and API keys..." /></MenuItem>
+            <MenuItem Header="_Settings"><MenuItem Name="MenuSettingsApiKey" Header="_Providers and API keys..." /><MenuItem Name="MenuModelManagement" Header="_Model recommendations..." /></MenuItem>
             <MenuItem Header="_Help"><MenuItem Name="MenuOpenLogs" Header="Open _logs folder" /><MenuItem Name="MenuHelpAbout" Header="_About and privacy" /></MenuItem>
         </Menu>
         <Border DockPanel.Dock="Top" Background="#172554" Padding="22,18">
@@ -53,7 +53,7 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
                     <TextBlock Name="VersionTextBlock" Foreground="#C7D2FE" HorizontalAlignment="Right" Margin="0,0,0,8" />
-                    <Button Name="ProviderButton" Content="Configure provider" Padding="14,8" />
+                    <StackPanel Orientation="Horizontal"><Button Name="ModelsButton" Content="Models" Margin="0,0,8,0" /><Button Name="ProviderButton" Content="Configure provider" Padding="14,8" /></StackPanel>
                 </StackPanel>
             </Grid>
         </Border>

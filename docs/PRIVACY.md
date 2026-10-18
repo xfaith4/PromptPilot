@@ -6,9 +6,12 @@ checked; the preview shows its exact excerpt. Prompts may contain confidential
 information, so choose a provider/account appropriate for your data.
 
 There is no telemetry, background analytics, remote session sync or automatic
-upload of local documents. Model discovery and a connection test happen only
-when requested. A connection test is a short paid generation, clearly labeled
-in the provider dialog. Model lists contain metadata and send no prompt.
+upload of local documents. Available-model metadata is checked weekly for the selected provider while the
+app is open, unless disabled; manual checks are also available. Discovery sends
+no prompt. A connection test is a short paid generation, clearly labeled in the
+provider dialog. Paid model comparisons require explicit opt-in and budgets.
+They use bundled synthetic prompts, never session prompts, and include baseline,
+candidate and downstream/control requests. No default is adopted automatically.
 
 ## Storage
 
@@ -45,3 +48,17 @@ Acceptance tools write synthetic prompts and responses to an explicitly selected
 local output directory. Those artifacts are separate from normal diagnostic logs.
 Review any report before sharing it. No diagnostic or acceptance report is uploaded
 automatically.
+
+## Model catalogs and comparisons
+
+The user-data `models` directory contains cached model metadata, synthetic
+comparison reports and an evaluation-budget ledger. Reports contain actual synthetic
+prompts/outputs, token usage, request IDs, latency, configured prices and model/code
+fingerprints. They exclude API keys. Defaults and acceptance/rollback history are
+stored in settings; saved sessions retain their own refinement and answer IDs.
+
+Evaluation reservations persist before dispatch and after uncertain interruptions.
+Do not delete/reset the budget ledger to reconcile a provider bill; the amounts are
+local estimates. The app serialises evaluation runs but does not control spending
+from other tools/accounts. An optional explicitly installed Windows task performs
+metadata discovery only, never paid comparison or default adoption.

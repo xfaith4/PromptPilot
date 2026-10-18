@@ -1,0 +1,51 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Prompt Pilot - Model recommendations" Width="840" Height="850" MinWidth="740" MinHeight="700" WindowStartupLocation="CenterOwner" Background="#F4F6FB" FontFamily="Segoe UI" FontSize="13">
+ <Window.Resources>
+  <Style TargetType="Button"><Setter Property="Padding" Value="12,7"/><Setter Property="Margin" Value="0,4,8,4"/></Style>
+  <Style TargetType="TextBox"><Setter Property="Padding" Value="6"/></Style>
+  <Style TargetType="ComboBox"><Setter Property="Padding" Value="6"/></Style>
+ </Window.Resources>
+ <DockPanel Margin="22">
+  <StackPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+   <TextBlock Text="Choose models by measured results" FontSize="23" FontWeight="SemiBold" Foreground="#172554"/>
+   <TextBlock Text="Discovery finds available models. Paid comparisons use synthetic tasks. You decide which defaults to adopt." TextWrapping="Wrap" Foreground="#475569" Margin="0,6,0,8"/>
+   <TextBlock Name="Defaults" FontWeight="SemiBold" TextWrapping="Wrap"/>
+  </StackPanel>
+  <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+   <TextBlock Name="Status" TextWrapping="Wrap" MinHeight="38" Foreground="#334155"/>
+   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="Cancel" Content="Cancel comparison" IsEnabled="False"/><Button Name="Close" Content="Close"/></StackPanel>
+  </StackPanel>
+  <TabControl>
+   <TabItem Header="Discover and compare"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="14">
+    <CheckBox Name="Auto" Content="Check available models weekly while Prompt Pilot is open" Margin="0,0,0,8"/>
+    <Button Name="Discover" Content="Check available models now" HorizontalAlignment="Left"/>
+    <TextBlock Name="Catalog" TextWrapping="Wrap" Foreground="#64748B" Margin="0,4,0,14"/>
+    <TextBlock Text="Which default should we evaluate?"/><ComboBox Name="Role" Margin="0,5,0,6"/>
+    <TextBlock Name="Baseline" TextWrapping="Wrap" Margin="0,0,0,10"/>
+    <TextBlock Text="Candidate model ID"/><ComboBox Name="Candidate" IsEditable="True" Margin="0,5,0,8"/>
+    <TextBlock Text="Token prices: USD per one million tokens"/>
+    <Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+     <StackPanel Margin="0,0,8,0"><TextBlock Text="Input"/><TextBox Name="InputPrice"/></StackPanel>
+     <StackPanel Grid.Column="1"><TextBlock Text="Output"/><TextBox Name="OutputPrice"/></StackPanel>
+    </Grid>
+    <TextBlock Name="PriceInfo" TextWrapping="Wrap" FontSize="11" Foreground="#64748B" Margin="0,5,0,3"/>
+    <Button Name="SavePrices" Content="Save explicit custom prices" HorizontalAlignment="Left"/>
+    <Separator Margin="0,12"/>
+    <CheckBox Name="Enabled" Content="Enable paid evaluations using my API credits" FontWeight="SemiBold" Margin="0,0,0,10"/>
+    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+     <StackPanel Margin="0,0,8,0"><TextBlock Text="Per-comparison ceiling (USD)"/><TextBox Name="RunBudget"/></StackPanel>
+     <StackPanel Grid.Column="1"><TextBlock Text="Monthly evaluation ceiling (USD)"/><TextBox Name="MonthBudget"/></StackPanel>
+    </Grid>
+    <TextBlock Text="Twelve tasks, three repetitions per model. Refinement also tests downstream answers with a fixed model and original-request controls. Every request counts toward both ceilings. Incomplete comparisons keep the current default." TextWrapping="Wrap" FontSize="11" Foreground="#64748B" Margin="0,10,0,8"/>
+    <CheckBox Name="PinRefine" Content="Pin the refinement default (block recommendation adoption)" Margin="0,0,0,8"/>
+    <CheckBox Name="PinAnswer" Content="Pin the answer default (block recommendation adoption)" Margin="0,0,0,8"/>
+    <StackPanel Orientation="Horizontal"><Button Name="SavePolicy" Content="Save preferences"/><Button Name="Evaluate" Content="Run paid comparison" Background="#4338CA" Foreground="White"/></StackPanel>
+   </StackPanel></ScrollViewer></TabItem>
+   <TabItem Header="Results and defaults"><Grid Margin="14"><Grid.RowDefinitions><RowDefinition Height="170"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <ListBox Name="Reports" ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+    <TextBox Name="Details" Grid.Row="1" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,10,0,8"/>
+    <WrapPanel Grid.Row="2"><Button Name="Accept" Content="Accept selected recommendation"/><Button Name="Rollback" Content="Roll back chosen role"/><Button Name="OpenReport" Content="Open full evidence"/></WrapPanel>
+    <TextBlock Grid.Row="3" Text="The chosen role is set in Discover and compare. Acceptance applies only to new sessions. Evidence expires after seven days or when models, prices or evaluation logic change. No automatic adoption." TextWrapping="Wrap" Foreground="#64748B" FontSize="11"/>
+   </Grid></TabItem>
+  </TabControl>
+ </DockPanel>
+</Window>

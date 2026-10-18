@@ -1,6 +1,6 @@
 # Release process
 
-Current target: **1.0.0-rc.1**. `data/product.json` is the version source.
+Current target: **1.0.0-rc.2**. `data/product.json` is the version source.
 A release candidate is not a claim that clean-machine, beta or trusted-publisher
 acceptance has already occurred. See ROADMAP.md and the latest local evidence.
 
@@ -50,3 +50,13 @@ lines including the provider request ID. Include session documents or screenshot
 only after reviewing their contents. Existing corrupt settings/session files are
 preserved; a valid `.bak` can be restored. Do not share API keys or encrypted
 credential files.
+
+## Model-management acceptance
+
+Verify separate role choices, migration of old selections as pinned, restored-session
+stability, weekly discovery/cache retention, explicit paid opt-in and both ceilings.
+Review an incomplete/failing comparison and ensure it cannot change a default.
+Review a qualifying comparison, accept it for one role, start a new session, then
+roll it back. Existing sessions must retain their choices. Recheck stale evidence
+and changed prices/capabilities. The optional scheduled-task installer must remain
+opt-in; use `-WhatIf` to inspect it before registering under the intended user.

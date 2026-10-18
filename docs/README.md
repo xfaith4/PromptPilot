@@ -1,10 +1,11 @@
 # Prompt Pilot documentation
 
-Current product documentation for **1.0.0-rc.1**:
+Current product documentation for **1.0.0-rc.2**:
 
 - [Start, configure a provider and use a complete session](../README.md).
 - [Workflow walkthrough](workflow.md).
 - [Validation record and remaining proof boundaries](VALIDATION.md).
+- [Model discovery and recommendation policy](MODEL-MANAGEMENT.md).
 - [Privacy and local data](PRIVACY.md).
 - [Release and support instructions](RELEASE.md).
 - [Release roadmap](../ROADMAP.md).

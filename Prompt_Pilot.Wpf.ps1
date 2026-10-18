@@ -30,6 +30,9 @@ $script:LogFilePath = ''
 $script:LogFailure = ''
 $script:LastEditUtc = [DateTime]::UtcNow
 $script:SettingsContext = $null
+$script:ModelContext = $null
+$script:NextModelPollUtc = [DateTime]::UtcNow.AddSeconds(15)
+$script:PendingRunAfterDiscovery = $false
 $script:InstancePath = Join-Path $script:DataDirectory 'instance.json'
 $script:Mutex = $null
 $script:OwnsMutex = $false
@@ -110,16 +113,18 @@ function Update-PilotProviderUi {
 function Set-PilotUiMode {
     param([ValidateSet('Refine', 'Answer')][string]$Mode)
     $script:Session.Mode = $Mode
+    $script:Session.Model = if ($Mode -eq 'Refine') { $script:Session.RefinementModel } else { $script:Session.AnswerModel }
     $script:Controls.ModeRefineRadio.IsChecked = ($Mode -eq 'Refine')
     $script:Controls.ModeAnswerRadio.IsChecked = ($Mode -eq 'Answer')
     $script:Controls.RunButton.Content = if ($Mode -eq 'Refine') { 'Refine prompt' } else { 'Get answer' }
     $script:Controls.IterationsTextBox.IsEnabled = ($Mode -eq 'Refine' -and -not $script:Operation)
     $script:Controls.AnswerSourcePanel.Visibility = if ($Mode -eq 'Answer') { 'Visible' } else { 'Collapsed' }
+    Update-PilotProviderUi
 }
 
 function Set-PilotBusy {
     param([bool]$Busy)
-    foreach ($name in @('RunButton', 'NewSessionButton', 'OpenSessionButton', 'SaveSessionButton', 'BrowseButton', 'IncludeFileCheckBox', 'ModeRefineRadio', 'ModeAnswerRadio', 'ProfileComboBox', 'ExampleComboBox', 'IterationsTextBox', 'MaxOutputTextBox', 'BudgetTextBox', 'PromptTextBox', 'GoalsTextBox', 'ProjectContextTextBox', 'FinalPromptTextBox', 'UsePromptButton', 'ProviderButton', 'AutosaveCheckBox', 'AnswerSourceComboBox', 'MenuNewSession', 'MenuOpenSession', 'MenuSaveSession', 'MenuSettingsApiKey')) {
+    foreach ($name in @('ModelsButton', 'MenuModelManagement', 'RunButton', 'NewSessionButton', 'OpenSessionButton', 'SaveSessionButton', 'BrowseButton', 'IncludeFileCheckBox', 'ModeRefineRadio', 'ModeAnswerRadio', 'ProfileComboBox', 'ExampleComboBox', 'IterationsTextBox', 'MaxOutputTextBox', 'BudgetTextBox', 'PromptTextBox', 'GoalsTextBox', 'ProjectContextTextBox', 'FinalPromptTextBox', 'UsePromptButton', 'ProviderButton', 'AutosaveCheckBox', 'AnswerSourceComboBox', 'MenuNewSession', 'MenuOpenSession', 'MenuSaveSession', 'MenuSettingsApiKey')) {
         $script:Controls[$name].IsEnabled = -not $Busy
     }
     $script:Controls.CancelButton.IsEnabled = $Busy
@@ -261,13 +266,16 @@ function Start-PilotBackground {
     $null = $worker.AddScript({
         param($CorePath, $Mode, $Options, $Provider, $Key, $Events, $Token)
         . $CorePath
-        Invoke-PilotWorkflow -Mode $Mode -Options $Options -Provider $Provider -ApiKey $Key -Events $Events -CancellationToken $Token
+        if ($Mode -eq 'Discover') { Update-PilotCatalog $Provider $Key $Options.DataDirectory $Events $Token }
+        elseif ($Mode -eq 'Evaluate') { Invoke-PilotModelEvaluation $Provider $Key $Options $Events $Token }
+        else { Invoke-PilotWorkflow -Mode $Mode -Options $Options -Provider $Provider -ApiKey $Key -Events $Events -CancellationToken $Token }
     }).AddArgument((Join-Path $script:AppDirectory 'PromptPilot.Core.ps1')).AddArgument($Mode).AddArgument($Options).AddArgument($Provider).AddArgument($ApiKey).AddArgument($events).AddArgument($cancellation.Token)
     try {
         $handle = $worker.BeginInvoke()
         $script:Operation = @{ Worker = $worker; Handle = $handle; Events = $events; Cancellation = $cancellation; Mode = $Mode; Target = $Target; KeepDraft = $false; Options = $Options }
-        Set-PilotBusy $true
+        if ($Target -eq 'Catalog') { $script:Controls.CancelButton.IsEnabled = $true } else { Set-PilotBusy $true }
         if ($Target -eq 'Settings') { Set-PilotSettingsBusy $true }
+        if ($Target -in @('Models','Catalog')) { Set-PilotModelBusy $true }
     }
     catch { $worker.Dispose(); $cancellation.Dispose(); throw }
 }
@@ -278,7 +286,8 @@ function Receive-PilotEvents {
     while ($script:Operation.Events.TryDequeue([ref]$eventItem)) {
         if ($eventItem.Kind -eq 'Log') { Write-PilotLog $eventItem.Message }
         elseif ($eventItem.Kind -eq 'Progress') {
-            if ($script:Operation.Target -eq 'Settings' -and $script:SettingsContext) { $script:SettingsContext.Status.Text = $eventItem.Message }
+            if ($script:Operation.Target -in @('Models','Catalog') -and $script:ModelContext) { $script:ModelContext.Status.Text = $eventItem.Message }
+            elseif ($script:Operation.Target -eq 'Settings' -and $script:SettingsContext) { $script:SettingsContext.Status.Text = $eventItem.Message }
             else { Set-PilotFeedback $eventItem.Message }
         }
         elseif ($eventItem.Kind -eq 'Revision' -and $script:Operation.Target -eq 'Main') {
@@ -312,7 +321,8 @@ function Complete-PilotBackground {
         $results = @($operation.Worker.EndInvoke($operation.Handle))
         if (-not $results.Count) { throw 'The provider worker ended without a result.' }
         $result = ConvertTo-PilotMap $results[-1]
-        if ($operation.Target -eq 'Settings') { Complete-PilotSettingsOperation $operation $result }
+        if ($operation.Target -in @('Models','Catalog')) { Complete-PilotModelOperation $operation $result }
+        elseif ($operation.Target -eq 'Settings') { Complete-PilotSettingsOperation $operation $result }
         else {
             $script:Session.Usage = $result.Usage
             $script:Controls.UsageTextBlock.Text = Format-PilotUsage $result.Usage
@@ -332,6 +342,8 @@ function Complete-PilotBackground {
         $script:Operation = $null
         Set-PilotBusy $false
         if ($script:SettingsContext) { Set-PilotSettingsBusy $false }
+        Set-PilotModelBusy $false
+        if ($script:PendingRunAfterDiscovery) { $script:PendingRunAfterDiscovery = $false; if (-not $script:Closing) { Invoke-PilotUiAction { Start-PilotUiRun } } }
     }
 }
 
@@ -345,6 +357,7 @@ function Stop-PilotBackground {
 }
 
 function Start-PilotUiRun {
+    if ($script:Operation -and $script:Operation.Target -eq 'Catalog') { $script:PendingRunAfterDiscovery = $true; $script:Operation.Cancellation.Cancel(); Set-PilotFeedback 'Preparing your request; stopping the background model check...'; return }
     Sync-PilotSessionFromUi -ValidateRunLimits
     if ($script:Session.Mode -eq 'Refine' -and ($script:Session.Revisions.Count + $script:Session.Iterations) -gt 100) { throw 'This session would exceed 100 revisions. Export it and start a new session before refining again.' }
     $provider = (Get-PilotProviders)[$script:Session.ProviderName]
@@ -386,7 +399,7 @@ function Confirm-PilotSessionChange {
 function New-PilotUiSession {
     if (-not (Confirm-PilotSessionChange)) { return }
     $provider = $script:Session.ProviderName
-    Load-PilotUiSession (New-PilotSession $provider $script:Session.Model)
+    Load-PilotUiSession (New-PilotSessionFromDefaults $script:Preferences $provider)
     $script:Controls.UsageTextBlock.Text = 'No requests yet'
     Set-PilotFeedback 'Write a request or choose an example to get started.'
 }
@@ -403,6 +416,7 @@ function Open-PilotUiSession {
         else {
             $session = New-PilotSession $script:Session.ProviderName $script:Session.Model
             $session.Model = Resolve-PilotModel $session.ProviderName ([string](Get-PilotValue $raw 'Model' $session.Model))
+            $session.RefinementModel = $session.Model; $session.AnswerModel = $session.Model
             $session.Goals = [string](Get-PilotValue $raw 'Goals' (Get-PilotValue $raw 'RefinementGoals' $session.Goals))
             $session.ProjectContext = [string](Get-PilotValue $raw 'ProjectContext' '')
             $session.Iterations = [int](Get-PilotValue $raw 'Iterations' 2)
@@ -428,7 +442,7 @@ function Set-PilotSettingsBusy {
     param([bool]$Busy)
     if (-not $script:SettingsContext) { return }
     $s = $script:SettingsContext
-    foreach ($control in @($s.Provider, $s.Model, $s.Key, $s.Remember, $s.Custom, $s.Save, $s.Refresh, $s.Test, $s.Forget)) { $control.IsEnabled = -not $Busy }
+    foreach ($control in @($s.Role, $s.Pinned, $s.Provider, $s.Model, $s.Key, $s.Remember, $s.Custom, $s.Save, $s.Refresh, $s.Test, $s.Forget)) { $control.IsEnabled = -not $Busy }
     $s.Input.IsEnabled = (-not $Busy -and $s.Custom.IsChecked)
     $s.Output.IsEnabled = (-not $Busy -and $s.Custom.IsChecked)
     $s.Cancel.IsEnabled = $Busy
@@ -490,6 +504,7 @@ function Show-PilotSettings {
  <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="22">
   <TextBlock Text="Connect your model provider" FontSize="21" FontWeight="SemiBold" Foreground="#172554" Margin="0,0,0,5" />
   <TextBlock Text="Your keys stay on this PC. A provider API account is separate from a chat subscription." TextWrapping="Wrap" Foreground="#64748B" Margin="0,0,0,16" />
+  <TextBlock Text="Model choice for" /><ComboBox Name="RoleComboBox" Padding="6" Margin="0,5,0,8" /><CheckBox Name="PinModelCheckBox" Content="Pin this default until I change it" IsChecked="True" Margin="0,0,0,12" />
   <TextBlock Text="Provider" /><ComboBox Name="ProviderComboBox" DisplayMemberPath="Title" Padding="6" Margin="0,5,0,12" />
   <TextBlock Text="Model ID" /><Grid Margin="0,5,0,5"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
    <ComboBox Name="ModelComboBox" IsEditable="True" Padding="6" /><Button Name="RefreshModelsButton" Grid.Column="1" Content="Load models" Padding="12,6" Margin="8,0,0,0" />
@@ -513,14 +528,16 @@ function Show-PilotSettings {
 '@
     $dialog = [Windows.Markup.XamlReader]::Load([Xml.XmlNodeReader]::new($markup))
     $dialog.Owner = $script:Window
-    $script:SettingsContext = @{ Dialog = $dialog; Provider = $dialog.FindName('ProviderComboBox'); Model = $dialog.FindName('ModelComboBox'); Key = $dialog.FindName('KeyBox'); Remember = $dialog.FindName('RememberKeyCheckBox'); Forget = $dialog.FindName('ForgetKeyButton'); Custom = $dialog.FindName('CustomPricingCheckBox'); Input = $dialog.FindName('InputPriceBox'); Output = $dialog.FindName('OutputPriceBox'); PriceInfo = $dialog.FindName('PricingInfoTextBlock'); Status = $dialog.FindName('StatusTextBlock'); CredentialStatus = $dialog.FindName('CredentialStatusTextBlock'); Refresh = $dialog.FindName('RefreshModelsButton'); Test = $dialog.FindName('TestRequestButton'); Cancel = $dialog.FindName('CancelRequestButton'); Save = $dialog.FindName('SaveButton'); Close = $dialog.FindName('CloseButton') }
+    $script:SettingsContext = @{ Dialog = $dialog; Provider = $dialog.FindName('ProviderComboBox'); Role = $dialog.FindName('RoleComboBox'); Pinned = $dialog.FindName('PinModelCheckBox'); Model = $dialog.FindName('ModelComboBox'); Key = $dialog.FindName('KeyBox'); Remember = $dialog.FindName('RememberKeyCheckBox'); Forget = $dialog.FindName('ForgetKeyButton'); Custom = $dialog.FindName('CustomPricingCheckBox'); Input = $dialog.FindName('InputPriceBox'); Output = $dialog.FindName('OutputPriceBox'); PriceInfo = $dialog.FindName('PricingInfoTextBlock'); Status = $dialog.FindName('StatusTextBlock'); CredentialStatus = $dialog.FindName('CredentialStatusTextBlock'); Refresh = $dialog.FindName('RefreshModelsButton'); Test = $dialog.FindName('TestRequestButton'); Cancel = $dialog.FindName('CancelRequestButton'); Save = $dialog.FindName('SaveButton'); Close = $dialog.FindName('CloseButton') }
     $s = $script:SettingsContext
+    foreach ($role in @('Refine','Answer')) { $null = $s.Role.Items.Add($role) }; $s.Role.SelectedItem = $script:Session.Mode
+    $s.Role.Add_SelectionChanged({ if ($script:SettingsContext -and $script:SettingsContext.Provider.SelectedItem) { $s = $script:SettingsContext; $name = [string]$s.Provider.SelectedItem.Key; $s.Model.Text = Get-PilotRoleModel $script:Preferences $name ([string]$s.Role.SelectedItem); $s.Pinned.IsChecked = $script:Preferences.Providers[$name].Pins[[string]$s.Role.SelectedItem]; Update-PilotSettingsPricing } })
     foreach ($provider in (Get-PilotProviders).Values) { $null = $s.Provider.Items.Add([pscustomobject]@{ Key = $provider.Name; Title = $provider.DisplayName }) }
     $s.Provider.Add_SelectionChanged({
         $s = $script:SettingsContext
         if (-not $s -or -not $s.Provider.SelectedItem) { return }
         $name = [string]$s.Provider.SelectedItem.Key
-        $s.Model.Items.Clear(); $s.Model.Text = $script:Preferences.Providers[$name].Model; $s.Key.Clear()
+        $s.Model.Items.Clear(); $s.Model.Text = Get-PilotRoleModel $script:Preferences $name ([string]$s.Role.SelectedItem); $s.Pinned.IsChecked = $script:Preferences.Providers[$name].Pins[[string]$s.Role.SelectedItem]; $s.Key.Clear()
         try { $source = (Get-PilotCredential $name $script:Preferences $script:SessionKeys).Source } catch { $source = 'saved key unavailable; enter a replacement' }
         $s.CredentialStatus.Text = 'Credential: ' + $source + $(if ($name -eq 'GitHubModels') { '. Use a GitHub Models token with Models access; Copilot subscriptions do not supply this API.' } else { '' })
         Update-PilotSettingsPricing
@@ -565,7 +582,7 @@ function Show-PilotSettings {
         try {
             $s = $script:SettingsContext; $rates = Get-PilotSettingsRates
             $script:Preferences.PricingOverrides = $rates.Overrides
-            $script:Preferences.Providers[$rates.ProviderName].Model = $rates.Model
+            Set-PilotRoleModel $script:Preferences $rates.ProviderName ([string]$s.Role.SelectedItem) $rates.Model ($s.Pinned.IsChecked -eq $true)
             $script:Preferences.ActiveProvider = $rates.ProviderName
             if ($s.Key.Password) {
                 if ($s.Remember.IsChecked) { $script:Preferences.Keys[$rates.ProviderName] = Protect-PilotSecret $s.Key.Password; $script:SessionKeys.Remove($rates.ProviderName) }
@@ -573,7 +590,10 @@ function Show-PilotSettings {
                 if ($s.Key.Password -notin $script:KnownSecrets) { $script:KnownSecrets += $s.Key.Password }
             }
             Save-PilotUiPreferences
-            $script:Session.ProviderName = $rates.ProviderName; $script:Session.Model = $rates.Model
+            $script:Session.ProviderName = $rates.ProviderName
+            $script:Session.RefinementModel = Get-PilotRoleModel $script:Preferences $rates.ProviderName Refine
+            $script:Session.AnswerModel = Get-PilotRoleModel $script:Preferences $rates.ProviderName Answer
+            $script:Session.Model = if ($script:Session.Mode -eq 'Refine') { $script:Session.RefinementModel } else { $script:Session.AnswerModel }
             Update-PilotProviderUi; Mark-PilotDirty
             $s.Dialog.Close()
             Set-PilotFeedback 'Provider saved. Write your request, then refine or get an answer.'
@@ -596,6 +616,8 @@ function Invoke-PilotUiAction {
     param([scriptblock]$Action)
     try { & $Action } catch { Set-PilotFeedback $_.Exception.Message -ErrorState }
 }
+
+. (Join-Path $script:AppDirectory 'PromptPilot.ModelWindow.ps1')
 
 Initialize-PilotLogging
 try {
@@ -634,7 +656,7 @@ try {
     $script:Controls.ExampleComboBox.DisplayMemberPath = 'Title'
     foreach ($example in $script:Examples) { $null = $script:Controls.ExampleComboBox.Items.Add([pscustomobject]$example) }
     $active = $script:Preferences.ActiveProvider
-    $session = New-PilotSession $active $script:Preferences.Providers[$active].Model
+    $session = New-PilotSessionFromDefaults $script:Preferences $active
     $restored = $false
     if ($script:Preferences.Autosave -and $script:Preferences.LastSessionId -cmatch '^[a-f0-9]{32}$') {
         $sessionPath = Join-Path $script:SessionsDirectory ($script:Preferences.LastSessionId + '.json')
@@ -664,6 +686,7 @@ try {
     foreach ($name in @('OpenSessionButton', 'MenuOpenSession')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { Open-PilotUiSession } }) }
     foreach ($name in @('SaveSessionButton', 'MenuSaveSession')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { $null = Save-PilotSessionAs } }) }
     foreach ($name in @('ExportButton', 'MenuExportSession')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { Export-PilotUiSession } }) }
+    foreach ($name in @('ModelsButton', 'MenuModelManagement')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { Show-PilotModelManagement } }) }
     foreach ($name in @('ProviderButton', 'MenuSettingsApiKey')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { Show-PilotSettings } }) }
     foreach ($name in @('OpenLogsButton', 'MenuOpenLogs')) { $script:Controls[$name].Add_Click({ Invoke-PilotUiAction { $directory = if ($script:LogFilePath) { Split-Path -Parent $script:LogFilePath } else { $script:DataDirectory }; Start-Process explorer.exe -ArgumentList ('"' + $directory + '"') } }) }
     $script:Controls.ClearLogButton.Add_Click({ $script:Controls.LogTextBox.Clear(); Write-PilotLog 'Activity view cleared. Disk log retained.' })
@@ -675,6 +698,7 @@ try {
         try {
             Receive-PilotEvents
             Complete-PilotBackground
+            Invoke-PilotAutomaticModelCheck
             if ($script:Dirty -and $script:Preferences.Autosave -and ([DateTime]::UtcNow - $script:LastEditUtc).TotalSeconds -gt 1) { try { Save-PilotAutosave } catch { $script:LastEditUtc = [DateTime]::UtcNow.AddSeconds(10); Set-PilotFeedback ('Autosave needs attention: ' + $_.Exception.Message) -ErrorState } }
             if (-not $SmokeTest) {
                 $activation = Join-Path $script:DataDirectory 'activate.request'

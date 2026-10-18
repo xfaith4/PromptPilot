@@ -35,3 +35,43 @@ Preserved unrelated dirty-worktree changes and Windows source line endings/BOM.
 Used isolated data and synthetic live prompts within bounded budgets. Original owner
 settings were not changed. Removed encrypted credential copies from owned test fixtures.
 No commit, push, deployment or public release was performed.
+
+
+# Model discovery and role-specific recommendations - active work (2026-10-18)
+
+## Goal
+Complete the agreed discover -> qualify -> compare -> recommend -> accept/rollback
+workflow for separate refinement and answer defaults, preserving manual pins and saved sessions.
+
+## Coding phases
+11. Inspect current changes and document schemas, evaluation policy and acceptance gates. **Complete.**
+12. Add settings/session migration and independent per-provider Refine/Answer choices. **Complete.**
+13. Add persistent catalog discovery, weekly open-app checks, failure backoff and optional closed-app checker tooling. **Complete.**
+14. Build a repeated, budgeted comparison runner with an expanded synthetic corpus, fixed downstream answer model and crash-safe monthly accounting. **Complete.**
+15. Add explainable recommendation gates, provenance/freshness checks, explicit adoption, pinning and rollback. **Complete.**
+16. Integrate a native model-management window, progress/cancellation and routing feedback. **Complete.**
+17. Test migrations, discovery failures, spend/cancellation, role selection, stale recommendations and real WPF workflows; run bounded live acceptance where configured. **Complete within the documented proof boundaries.**
+18. Update docs, rebuild the portable candidate and record current evidence and external limits. **Complete.**
+
+## Design constraints
+- One provider per session; switching provider remains explicit. Defaults apply to new sessions, not restored work.
+- Automatic discovery enabled, paid benchmarking disabled initially; recommendations require acceptance.
+- Unknown pricing or incompatible APIs block evaluation. No guess from model names or release order.
+- At least 12 cases per role and three paired repetitions for recommendation eligibility. Use deterministic checks, preserve actual outputs and report limited coverage.
+- Refinement comparisons include downstream answers under a fixed answer model and an original-prompt control.
+- Reserve spend on disk before every evaluation request; serialise evaluations and retain uncertain reservations after interruption.
+- Preserve all pre-existing changes, UTF-8 BOM/CRLF compatibility, credentials and owner settings. No commit/push/publication.
+
+## Verification targets
+Migration round trips; independent routing; pinned/active-session preservation; cached discovery/backoff;
+unknown prices, partial/cancelled/crashed evaluation accounting; repeatable candidate selection;
+stale evidence rejection; acceptance/rollback; real native dialog and packaged resource loading.
+
+## Model-management execution notes
+- First escalated headless test launch: automatic approval review timed out before its deadline; no test process was started. Will retry once after integrating the feature; no unsafe-action conclusion follows from a review timeout.
+
+## Model-management final handoff
+- All new coding phases complete. Version 1.0.0-rc.2 passes 63 native and 51 headless tests.
+- Compiled model dialog, packaged activation/restart and final ZIP/hash audit passed.
+- Detailed proof, exact current source hashes and the full-live-versus-final-preflight boundary are recorded in build/model-management-verification.md and .json.
+- External public-release gates remain open in ROADMAP.md. No owner default, scheduled task, commit or public release was changed.

@@ -19,6 +19,7 @@ function Get-PilotValue {
 function ConvertTo-PilotMap {
     param($Value)
     if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTime]) { return $Value.ToUniversalTime().ToString('o') }
     if ($Value -is [System.Collections.IDictionary]) {
         $map = @{}
         foreach ($key in $Value.Keys) { $map[$key] = ConvertTo-PilotMap $Value[$key] }
@@ -110,8 +111,8 @@ function Get-PilotPricing {
 function New-PilotPreferences {
     $providers = Get-PilotProviders
     $models = @{}
-    foreach ($name in $providers.Keys) { $models[$name] = @{ Model = $providers[$name].DefaultModel } }
-    return @{ SchemaVersion = 2; ActiveProvider = 'OpenAI'; Providers = $models; Keys = @{}; PricingOverrides = @{}; Autosave = $true; LastSessionId = ''; MigrationNotes = @() }
+    foreach ($name in $providers.Keys) { $models[$name] = @{ Model = $providers[$name].DefaultModel; AnswerModel = $providers[$name].DefaultModel; Pins = @{ Refine = $false; Answer = $false } } }
+    return @{ SchemaVersion = 3; ActiveProvider = 'OpenAI'; Providers = $models; Keys = @{}; PricingOverrides = @{}; Autosave = $true; LastSessionId = ''; MigrationNotes = @(); ModelManagement = New-PilotModelPolicy }
 }
 
 function Read-PilotPreferences {
@@ -127,15 +128,22 @@ function Read-PilotPreferences {
         else { throw 'Settings could not be read. Your existing file was preserved. Restore settings.json.bak or move the damaged file aside.' }
     }
     $schema = [int](Get-PilotValue $raw 'SchemaVersion' 1)
-    if ($schema -gt 2) { throw 'These settings were created by a newer Prompt Pilot version. Update the app before opening them.' }
+    if ($schema -gt 3) { throw 'These settings were created by a newer Prompt Pilot version. Update the app before opening them.' }
     $preferences.ActiveProvider = Resolve-PilotProvider (Get-PilotValue $raw 'ActiveProvider' 'OpenAI')
     foreach ($oldName in (Get-PilotValue $raw 'Providers' @{}).Keys) {
         $name = Resolve-PilotProvider $oldName
         $model = Get-PilotValue $raw.Providers[$oldName] 'Model' $preferences.Providers[$name].Model
         $preferences.Providers[$name].Model = Resolve-PilotModel $name $model
+        $preferences.Providers[$name].AnswerModel = Resolve-PilotModel $name ([string](Get-PilotValue $raw.Providers[$oldName] 'AnswerModel' $model))
+        $pins = Get-PilotValue $raw.Providers[$oldName] 'Pins' @{ Refine = ($schema -lt 3); Answer = ($schema -lt 3) }
+        foreach ($role in @('Refine','Answer')) {
+            $pinned = Get-PilotValue $pins $role $false
+            if ($pinned -isnot [bool]) { throw 'Model pins must be JSON booleans.' }
+            $preferences.Providers[$name].Pins[$role] = $pinned
+        }
     }
     foreach ($oldName in (Get-PilotValue $raw 'Keys' @{}).Keys) { $preferences.Keys[(Resolve-PilotProvider $oldName)] = $raw.Keys[$oldName] }
-    if ($schema -eq 2) {
+    if ($schema -ge 2) {
         $preferences.PricingOverrides = Get-PilotValue $raw 'PricingOverrides' @{}
         $autosave = Get-PilotValue $raw 'Autosave' $true
         if ($autosave -isnot [bool]) { throw 'Settings autosave must be a JSON boolean.' }
@@ -154,6 +162,20 @@ function Read-PilotPreferences {
             }
         }
     }
+    if ($schema -ge 3) {
+        $policy = Get-PilotValue $raw 'ModelManagement' @{}
+        foreach ($field in @('AutoCheck','EvaluationEnabled')) {
+            $value = Get-PilotValue $policy $field $preferences.ModelManagement[$field]
+            if ($value -isnot [bool]) { throw 'Model-management switches must be JSON booleans.' }
+            $preferences.ModelManagement[$field] = $value
+        }
+        foreach ($field in @('RunBudgetUsd','MonthlyBudgetUsd')) {
+            $value = [double](Get-PilotValue $policy $field $preferences.ModelManagement[$field])
+            if ([double]::IsNaN($value) -or [double]::IsInfinity($value) -or $value -le 0 -or $value -gt 100) { throw 'Invalid model-evaluation budget in settings.' }
+            $preferences.ModelManagement[$field] = $value
+        }
+        $preferences.ModelManagement.History = @(Get-PilotValue $policy 'History' @() | Select-Object -Last 50)
+    }
     return $preferences
 }
 
@@ -161,7 +183,7 @@ function Save-PilotPreferences {
     param([string]$Path, [hashtable]$Preferences)
     # Runtime credentials live elsewhere. Keys contains only DPAPI ciphertext.
     $payload = @{}
-    foreach ($name in @('SchemaVersion', 'ActiveProvider', 'Providers', 'Keys', 'PricingOverrides', 'Autosave', 'LastSessionId')) { $payload[$name] = $Preferences[$name] }
+    foreach ($name in @('SchemaVersion', 'ActiveProvider', 'Providers', 'Keys', 'PricingOverrides', 'Autosave', 'LastSessionId', 'ModelManagement')) { $payload[$name] = $Preferences[$name] }
     Write-PilotJson $Path $payload
 }
 
@@ -266,7 +288,9 @@ function Invoke-PilotHttp {
                     Send-PilotEvent $Events 'Log' ("HTTP {0}: provider={1}; model={2}; request-id={3}" -f $status, $Provider.DisplayName, $Model, $requestId)
                     return @{ Data = $parsed; RequestId = $requestId; StatusCode = $status }
                 }
-                if ($Budget) { $Budget.UsedUsd -= $AttemptCeiling } # Explicit non-success responses contain no generation.
+                # Server/time-out failures may occur after work was performed. Keep
+                # their liability; only explicit pre-generation rejection is refunded.
+                if ($Budget -and $status -in @(400, 401, 403, 404, 405, 413, 415, 422, 429)) { $Budget.UsedUsd -= $AttemptCeiling }
                 $errorObject = Get-PilotValue $parsed 'error' @{}
                 $errorType = [string](Get-PilotValue $errorObject 'type' (Get-PilotValue $errorObject 'code' ''))
                 $detail = [string](Get-PilotValue $errorObject 'message' 'The provider rejected the request.')
@@ -331,7 +355,7 @@ function Get-PilotModels {
         foreach ($item in @($items)) {
             $id = [string](Get-PilotValue $item 'id' '')
             if ($id) {
-                $models.Add([pscustomobject]@{ Id = $id; Name = [string](Get-PilotValue $item 'display_name' (Get-PilotValue $item 'name' $id)) })
+                $models.Add([pscustomobject]@{ Id = $id; Name = [string](Get-PilotValue $item 'display_name' (Get-PilotValue $item 'name' $id)); CreatedAt = Get-PilotValue $item 'created_at' (Get-PilotValue $item 'created'); MaxInputTokens = Get-PilotValue $item 'max_input_tokens'; MaxOutputTokens = Get-PilotValue $item 'max_tokens'; Capabilities = Get-PilotValue $item 'capabilities' @{} })
             }
         }
         if (-not (Get-PilotValue $response.Data 'has_more' $false)) { break }
@@ -349,17 +373,7 @@ function Invoke-PilotChat {
         [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None,
         [int]$MaxRetries = 2, [int]$RetryDelayMs = 750, [int]$TimeoutSeconds = 120)
     $modelId = Resolve-PilotModel $Provider.Name $Model
-    $body = @{ model = $modelId; messages = @($Messages) }
-    if ($Provider.Protocol -eq 'Anthropic') {
-        $body.max_tokens = $MaxOutputTokens
-        if ($System) { $body.system = $System }
-    }
-    else {
-        if ($System) { $body.messages = @(@{ role = 'system'; content = $System }) + $body.messages }
-        if ($Provider.Protocol -eq 'OpenAI') { $body.max_completion_tokens = $MaxOutputTokens }
-        else { $body.max_tokens = $MaxOutputTokens }
-    }
-    $json = $body | ConvertTo-Json -Depth 12 -Compress
+    $json = New-PilotChatJson $Provider $modelId $System $Messages $MaxOutputTokens
     $ceiling = Get-PilotCallCeiling $json $MaxOutputTokens $Budget.Pricing
     $uri = $Provider.ApiBase.TrimEnd('/') + '/' + $Provider.ChatPath.TrimStart('/')
     $response = Invoke-PilotHttp -Provider $Provider -ApiKey $ApiKey -Uri $uri -Body $json -Model $modelId -Events $Events -Budget $Budget -AttemptCeiling $ceiling -CancellationToken $CancellationToken -MaxRetries $MaxRetries -RetryDelayMs $RetryDelayMs -TimeoutSeconds $TimeoutSeconds
@@ -395,7 +409,7 @@ function Invoke-PilotChat {
         if ($stop -in @('length', 'max_tokens')) { throw 'The output limit was consumed before visible text was returned, possibly by reasoning tokens. Increase the output limit and budget.' }
         throw 'The provider returned no text. Check whether the selected model supports text chat and whether its response was blocked.'
     }
-    return @{ Text = $text.Trim(); InputTokens = $inputTokens; OutputTokens = $outputTokens; CostUsd = $cost; RequestId = $response.RequestId; Truncated = ($stop -in @('length', 'max_tokens')); StopReason = $stop; Model = $modelId }
+    return @{ Text = $text.Trim(); InputTokens = $inputTokens; OutputTokens = $outputTokens; CostUsd = $cost; RequestId = $response.RequestId; ResolvedModel = [string](Get-PilotValue $data 'model' $modelId); Truncated = ($stop -in @('length', 'max_tokens')); StopReason = $stop; Model = $modelId }
 }
 
 function Read-PilotAttachment {
@@ -513,12 +527,12 @@ function Invoke-PilotWorkflow {
 
 function New-PilotSession {
     param([string]$ProviderName = 'OpenAI', [string]$Model = 'gpt-5.4-mini')
-    return @{ SchemaVersion = 1; Id = [guid]::NewGuid().ToString('N'); Title = 'Untitled session'; CreatedAtUtc = [DateTime]::UtcNow.ToString('o'); UpdatedAtUtc = [DateTime]::UtcNow.ToString('o'); ProviderName = $ProviderName; Model = $Model; Mode = 'Refine'; AnswerSource = 'Original'; Profile = 'Coding task'; BasePrompt = ''; Goals = 'Preserve my intent and constraints. Make the next action clear. Keep it concise.'; ProjectContext = ''; FilePath = ''; IncludeFile = $false; Iterations = 2; MaxOutputTokens = 2048; BudgetUsd = 0.50; Revisions = @(); FinalPrompt = ''; Answer = ''; Usage = @{} }
+    return @{ SchemaVersion = 2; RefinementModel = $Model; AnswerModel = $Model; Id = [guid]::NewGuid().ToString('N'); Title = 'Untitled session'; CreatedAtUtc = [DateTime]::UtcNow.ToString('o'); UpdatedAtUtc = [DateTime]::UtcNow.ToString('o'); ProviderName = $ProviderName; Model = $Model; Mode = 'Refine'; AnswerSource = 'Original'; Profile = 'Coding task'; BasePrompt = ''; Goals = 'Preserve my intent and constraints. Make the next action clear. Keep it concise.'; ProjectContext = ''; FilePath = ''; IncludeFile = $false; Iterations = 2; MaxOutputTokens = 2048; BudgetUsd = 0.50; Revisions = @(); FinalPrompt = ''; Answer = ''; Usage = @{} }
 }
 
 function ConvertTo-PilotSession {
     param($Value)
-    if ([int](Get-PilotValue $Value 'SchemaVersion' 0) -ne 1) { throw 'Unsupported session format. Open a Prompt Pilot session JSON file.' }
+    if ([int](Get-PilotValue $Value 'SchemaVersion' 0) -notin @(1,2)) { throw 'Unsupported session format. Open a Prompt Pilot session JSON file.' }
     $id = [string](Get-PilotValue $Value 'Id' '')
     if ($id -cnotmatch '^[a-f0-9]{32}$') { throw 'The session ID is invalid.' }
     $session = New-PilotSession
@@ -528,6 +542,8 @@ function ConvertTo-PilotSession {
     }
     $session.ProviderName = Resolve-PilotProvider ([string]$session.ProviderName)
     $session.Model = Resolve-PilotModel $session.ProviderName ([string]$session.Model)
+    $session.SchemaVersion = 2
+    foreach ($field in @('RefinementModel','AnswerModel')) { $session[$field] = Resolve-PilotModel $session.ProviderName ([string](Get-PilotValue $Value $field $session.Model)) }
     if ($session.Mode -notin @('Refine', 'Answer') -or $session.Profile -notin @('Coding task', 'Investigation', 'General task')) { throw 'The session contains an unsupported mode or profile.' }
     foreach ($name in @('BasePrompt', 'Goals', 'ProjectContext', 'FilePath', 'FinalPrompt', 'Answer', 'Title')) {
         $session[$name] = [string]$session[$name]
@@ -579,7 +595,7 @@ function Export-PilotMarkdown {
     $safe = ConvertTo-PilotSession $Session
     $lines = [Collections.Generic.List[string]]::new()
     $lines.Add('# ' + $safe.Title)
-    $lines.Add(("`nProvider: {0} | Model: {1} | Saved: {2}" -f $safe.ProviderName, $safe.Model, $safe.UpdatedAtUtc))
+    $lines.Add(("`nProvider: {0} | Model: {1} | Saved: {2}" -f $safe.ProviderName, ($safe.RefinementModel + ' / answer: ' + $safe.AnswerModel), $safe.UpdatedAtUtc))
     $lines.Add("`n## Original request`n`n" + $safe.BasePrompt)
     if ($safe.ProjectContext) { $lines.Add("`n## Project context`n`n" + $safe.ProjectContext) }
     foreach ($revision in @($safe.Revisions)) { $lines.Add(("`n## Revision {0}`n`n{1}" -f $revision.Number, $revision.Text)) }
@@ -614,3 +630,5 @@ function Compare-PilotText {
         else { [pscustomobject]@{ Kind = 'Removed'; Text = $left[$i] }; $i++ }
     }
 }
+
+. (Join-Path $script:PilotCoreDirectory 'PromptPilot.Models.ps1')

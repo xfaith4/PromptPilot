@@ -62,3 +62,14 @@ a full live Refine/Answer response remains untested.
 - A final review found that close-time autosave errors could allow loss of unsaved changes. Added a default-No discard prompt and a real WPF regression that keeps the window and prompt intact after a simulated save failure.
 - The final unsigned portable candidate passed compiled startup and packaged activation/restart. Verified 17 manifest file hashes and 19 ZIP entries against their packaged contents, with no runtime/private files included.
 - Current verification and artifact hashes are recorded in `build/product-verification.json`; external acceptance gates remain unchecked in ROADMAP.md.
+
+## Model-management baseline
+- Current source uses one provider/model per session and settings schema 2. Discovery keeps only model IDs/display names. Existing evaluation cases test refinement constraints, not comparative selection.
+- Official model-selection guidance reviewed on 2026-10-18: compare identical inputs against a quality bar and measure cost/latency. Evaluation will stay local/provider-neutral rather than depending on a hosted evaluation product.
+- References: https://developers.openai.com/api/docs/guides/model-selection and https://developers.openai.com/api/docs/guides/evaluation-best-practices .
+- No applicable AGENTS.md or relevant memory registry entry was found.
+- Focused model tests passed all eleven non-network cases. Two catalog tests hit the expected sandbox loopback restriction. No provider traffic occurred. Settings, corpus, spend retention, adoption and rollback logic passed using the shared engine with mocked generation.
+- Live comparisons demonstrated a genuine keep-current decision despite lower candidate price/latency. Exact-output grading currently includes capitalization/punctuation; reports preserve the outputs so users can review such failures. No universal relative model-quality claim follows.
+- Full live comparisons were completed before the final HTTP server-error liability correction. Their precise tested source is archived; the final source intentionally invalidates their acceptance fingerprints. The successful live request path is unchanged, and final local tests cover the corrected error-budget behavior.
+- Final native suite: 63 passed; headless: 51 passed with twelve UI checks excluded. The actual compiled model dialog and packaged launcher passed, not only source startup. The UI Automation issue was test-tree scope: WPF owned dialogs appear beneath the owned main window.
+- Final artifact has 27 manifest files/29 ZIP entries, no private runtime files, and is unsigned. Model implementation is complete locally; hosted CI, independent machine/upgrade, broader usefulness and public distribution remain external acceptance gates.

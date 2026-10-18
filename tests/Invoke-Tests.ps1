@@ -34,4 +34,4 @@ $config.Run.Exit = $false
 $config.Run.PassThru = $true
 
 $result = Invoke-Pester -Configuration $config
-if ($result.FailedCount -gt 0 -or $result.PassedCount -lt 1) { exit 1 }
+if (($result.FailedCount + $result.FailedContainersCount + $result.FailedBlocksCount) -gt 0 -or $result.PassedCount -lt 1) { exit 1 }

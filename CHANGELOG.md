@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0-rc.2
+
+- Independent refinement/answer defaults and explicit pins; older choices migrate
+  without changing the model in restored sessions.
+- Cached weekly model discovery, manual checks and optional discovery-only Windows task tooling.
+- Budgeted, repeated model comparisons using twelve controlled tasks per role,
+  fixed downstream answers and original-request controls for refinement.
+- Persistent per-request spend reservations and per-run/monthly evaluation ceilings.
+- Explainable recommendations, freshness/model/pricing/capability fingerprints,
+  explicit adoption for future sessions, audit history and rollback.
+- Native model-management window, evidence inspection, cancellation and user-request
+  priority over automatic discovery. Paid comparisons are initially disabled.
+
+
 ## 1.0.0-rc.1
 
 - One cancellable background engine for refinement, answers, model discovery and real provider connection tests.
