@@ -73,3 +73,26 @@ a full live Refine/Answer response remains untested.
 - Full live comparisons were completed before the final HTTP server-error liability correction. Their precise tested source is archived; the final source intentionally invalidates their acceptance fingerprints. The successful live request path is unchanged, and final local tests cover the corrected error-budget behavior.
 - Final native suite: 63 passed; headless: 51 passed with twelve UI checks excluded. The actual compiled model dialog and packaged launcher passed, not only source startup. The UI Automation issue was test-tree scope: WPF owned dialogs appear beneath the owned main window.
 - Final artifact has 27 manifest files/29 ZIP entries, no private runtime files, and is unsigned. Model implementation is complete locally; hosted CI, independent machine/upgrade, broader usefulness and public distribution remain external acceptance gates.
+
+## Current-product demo audit (2026-10-18)
+- Live Pages demo still presents the old five-step UI and artificial controls. Current docs explicitly call it historical; replace rather than polish obsolete behavior.
+- Portfolio uses Next.js static export, typed apps/artifacts/candidates, self-contained demo bundles and a demoReady gate. No applicable AGENTS.md found in either checkout or shared ancestors.
+- Both worktrees contain many pre-existing line-ending changes; ignore-space-at-eol diff is empty before this task. Portfolio has a reserved public/demos/PromptPilot/.gitkeep.
+- gh CLI has no authenticated account; GitHub connector may provide publication access. Live Pages was retrieved read-only via curl with network escalation.
+
+## Saved-key bug reported during demo work
+- User screenshots and source startup log reproduce a shared ConvertTo-SecureString module-autoload failure before either discovery button dispatches HTTP. The app was Windows PowerShell 5.1; this is not a provider/API 404.
+- A minimal compiled probe with explicit native module import succeeded, with an already-imported-snap-in warning in the GUI host. It did not reproduce the owner's exact module-resolution environment. Closed the diagnostic process; subsequent probes captured console output.
+- Replaced the security cmdlet dependency with CurrentUser .NET DPAPI using the existing UTF-16/hex representation. Old ciphertext remains readable; no settings/key migration or provider-key replacement is needed. Added bidirectional legacy-format and fresh-host/no-security-autoload regressions.
+
+## Presentation proof
+- Public Pages deployment for 0e9b3f1 succeeded. The live demo, stylesheet, script and overview match the local verified files byte for byte; hashes retained in build/pages-live-verification.json.
+- Portfolio integration includes explicit release-candidate status, provenance-bearing WebP desktop captures, current 66-test report, intake record and a functional self-contained bundle. Shared source generator prevents separate handcrafted demo logic.
+- Compact layout initially clipped review controls inside the portfolio frame. Fixed the desktop working surface height and made only its content pane scroll; measured all primary actions inside the 640px frame. Mobile uses a single-column layout and full-size escape link.
+- The owner runtime's module-resolution failure was not reproduced by the small compiled probe. The direct DPAPI fix was validated independently in a host without security cmdlets and in both real EXE discovery dialogs with the existing saved key.
+
+## Windows build-tool discovery report (2026-10-18)
+- The user installed ps2exe in redirected Documents/PowerShell/Modules via PowerShell 7, then invoked Windows PowerShell 5.1 for the build. The product deliberately pins 1.0.17; the subsequently installed 1.0.18 does not satisfy that pin.
+- The build previously searched only its current PSModulePath. Resolve compatible installed ps2exe/Pester manifests explicitly in both redirected user module folders; do not modify persistent PSModulePath or install/upgrade modules automatically.
+- Official references: Microsoft about_PSModulePath and upstream MScholtes/PS2EXE confirm distinct host paths and 5.1-compatible compilation. Preserve the validated 1.0.17 pin.
+- Reproduced under native Windows PowerShell 5.1 with a clean host module path: ordinary lookup found zero pinned compilers; the new resolver selected existing ps2exe 1.0.17 and Pester 5.7.1 in OneDrive/Documents/PowerShell/Modules. All 69 native tests and the actual compiled startup passed. No module installation, compiler upgrade or persistent path change was needed.

@@ -4,6 +4,22 @@ Current target: **1.0.0-rc.2**. `data/product.json` is the version source.
 A release candidate is not a claim that clean-machine, beta or trusted-publisher
 acceptance has already occurred. See ROADMAP.md and the latest local evidence.
 
+## Build prerequisites
+
+Use Windows PowerShell for the build, even when your terminal is PowerShell 7:
+
+```powershell
+powershell.exe -NoProfile -Command "Install-Module ps2exe -RequiredVersion 1.0.17 -Scope CurrentUser"
+powershell.exe -NoProfile -Command "Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-PortableExe.ps1
+```
+
+If those versions are already installed in PowerShell 7's user module directory,
+the build resolves their explicit manifests from that location as well. Documents
+folder redirection (including OneDrive) is respected. No persistent module-path
+changes are made. The compiler remains pinned to 1.0.17; a side-by-side 1.0.18
+installation is not selected in its place.
+
 ## Local verification
 
 1. Run `powershell.exe -NoProfile -STA -File tests/Invoke-Tests.ps1` on Windows.

@@ -57,3 +57,20 @@
 - Final compiled Models dialog passed UI Automation after correcting the owned-window search in the test harness. Paid evaluation was off; test process closed. Packaged activation/restart passed.
 - Documentation-only handoff refresh retained the tested EXE/code/data, then regenerated manifest/checksums/ZIP. Audited 27 manifest files and 29 ZIP entries against source and checked owner settings/credential hygiene.
 - All coding/roadmap phases complete. Final evidence: build/model-management-verification.md and .json. Stable/public release acceptance remains separate and open.
+
+## Current-product web demos (2026-10-18)
+- Audited the live demo, current validation record, model policy and portfolio integration/asset rules.
+- Recorded design and coding phases before implementation. Building one shared offline demonstration with full-page and compact portfolio presentations.
+- Saved-key correction: direct Windows CurrentUser DPAPI preserves legacy ciphertext. Bidirectional compatibility, malformed input and a fresh host without security cmdlets pass. The full rebuilt candidate passes 66 native tests and packaged startup. Both discovery-dialog regressions now load saved encrypted keys.
+- Portfolio integration passes all four content validators with zero errors (existing warnings retained). ESLint and TypeScript pass; Next.js static export generates all 19 pages including the new project page.
+- Chromium verifies all scenarios, revisions, original comparison, answer-source selection, reset, both model roles and blocked adoption. Mobile views have no horizontal overflow and honor reduced motion. Real screenshots inspected; corrected missing whitespace around responsive line breaks.
+
+- Published two scoped commits through the authenticated GitHub connector: saved-key correction d491777, current-product Pages demo 0e9b3f1. Pages build/deploy succeeded; live overview/demo/CSS/JS exactly match local hashes. Synced local HEAD/index only after proving all published paths matched and no staged work existed; all working files preserved.
+- Actual rebuilt EXE UI Automation passed Load models (14 Anthropic IDs) and Check available models now using an existing encrypted credential. Zero prompts sent; owner settings unchanged; encrypted fixture copies removed.
+- Final portfolio static export and validators pass. Actual project page, evidence image and embedded comparison passed Chromium checks; the compact desktop action controls fit inside 640px. Portfolio changes are local and have not been deployed.
+- Final public Chromium checks passed the deployed refinement/review/answer/model workflow, reset and mobile layout with no script errors or provider requests. Hosted Pages deployment succeeded; Windows CI was still running at handoff (local native 66/66 and packaged startup already passed).
+
+## Build-tool discovery correction
+- Added explicit compatible-module resolution across the current host and both redirected Documents module folders. Kept ps2exe 1.0.17 pinned; Pester is passed by resolved manifest path into the test runspace.
+- Updated prerequisite/error instructions to invoke Install-Module under powershell.exe, so PowerShell 7 users install into the intended host location. No automatic installations or persistent environment changes.
+- Build-tool fix verified: three focused discovery tests passed; complete native build under a clean Windows PowerShell module path passed 69/69 tests and packaged startup. Existing ps2exe 1.0.17 and Pester 5.7.1 were used from the PowerShell 7 user directory. Regenerated EXE/ZIP; process module path unchanged. Evidence: build/build-tool-discovery-verification.json/.txt. Changes remain local; no commit/push performed for this correction.

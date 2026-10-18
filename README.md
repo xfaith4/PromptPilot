@@ -188,9 +188,18 @@ buttons with synthetic prompts and verifies restart recovery under isolated data
 ## Build a portable release (source checkout)
 
 ```powershell
-Install-Module ps2exe -RequiredVersion 1.0.17 -Scope CurrentUser
-.\tools\Build-PortableExe.ps1
+# Run from the project directory, in either Windows PowerShell or PowerShell 7.
+# These commands install prerequisites into Windows PowerShell's user location.
+powershell.exe -NoProfile -Command "Install-Module ps2exe -RequiredVersion 1.0.17 -Scope CurrentUser"
+powershell.exe -NoProfile -Command "Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-PortableExe.ps1
 ```
+
+The compiler remains pinned to **ps2exe 1.0.17** for reproducible builds; installing
+1.0.18 does not replace that requirement. The build also finds compatible modules
+already installed in either `Documents/WindowsPowerShell/Modules` or
+`Documents/PowerShell/Modules`, using the actual redirected Documents location.
+It does not change your persistent module path or automatically install modules.
 
 The build runs Windows tests, compiles the EXE, copies only declared resources,
 starts the EXE under a fresh data directory, validates its smoke report, and writes

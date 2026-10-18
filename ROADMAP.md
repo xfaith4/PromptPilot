@@ -64,7 +64,7 @@ Stable release status stays open until the acceptance evidence below exists.
 - [x] Validate browser workflows/mobile layout, portfolio content/lint/types/static build.
 - [x] Remove security-module autoload dependency from saved-key protection; preserve existing DPAPI format.
 - [x] 66 native tests and rebuilt packaged startup; both real EXE discovery buttons passed with an existing encrypted Anthropic key, metadata only.
-- [ ] Publish and verify the updated Pages demo.
+- [x] Publish and verify the updated Pages demo (0e9b3f1; live files match local hashes; public Chromium desktop/mobile workflow passed).
 
 ## External release acceptance
 

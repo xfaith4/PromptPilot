@@ -15,11 +15,14 @@ if (-not $OutputRoot) { $OutputRoot = Join-Path $root 'dist' }
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
 $null = [IO.Directory]::CreateDirectory($OutputRoot)
 if ($OutputBaseName -notmatch '^[A-Za-z0-9_-]+$') { throw 'OutputBaseName must be a simple file name.' }
-$module = Get-Module -ListAvailable ps2exe | Where-Object { $_.Version -eq [version]$product.ps2exeVersion } | Select-Object -First 1
-if (-not $module) { throw ('Install the pinned build tool: Install-Module ps2exe -RequiredVersion {0} -Scope CurrentUser' -f $product.ps2exeVersion) }
+. (Join-Path $PSScriptRoot 'Pilot.BuildTools.ps1')
+$module = Resolve-PilotBuildModule -Name ps2exe -RequiredVersion ([version]$product.ps2exeVersion)
+Write-Host ('Build compiler: ps2exe {0} | {1}' -f $module.Version, $module.Path)
 Import-Module $module.Path -Force
 $testEvidence = @{ Status = 'Skipped'; Note = 'Caller must supply matching Windows test evidence.' }
 if (-not $SkipTests) {
+    $pesterModule = Resolve-PilotBuildModule -Name Pester -MinimumVersion ([version]'5.0')
+    Write-Host ('Build tests: Pester {0} | {1}' -f $pesterModule.Version, $pesterModule.Path)
     $testRunspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
     $testRunspace.ApartmentState = 'STA'
     $testRunspace.Open()
@@ -27,12 +30,12 @@ if (-not $SkipTests) {
     $testPipeline.Runspace = $testRunspace
     try {
         $null = $testPipeline.AddScript({
-            param($Path)
+            param($Path, $PesterPath)
             Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
-            Import-Module Pester -MinimumVersion 5.0
+            Import-Module -Name $PesterPath -Force -ErrorAction Stop
             $result = Invoke-Pester -Path $Path -PassThru -Output Normal
             [pscustomobject]@{ Passed = $result.PassedCount; Failed = ($result.FailedCount + $result.FailedContainersCount + $result.FailedBlocksCount); FailedItems = @($result.Failed | ForEach-Object { $_.ExpandedName + ': ' + $_.ErrorRecord }) }
-        }).AddArgument((Join-Path $root 'tests'))
+        }).AddArgument((Join-Path $root 'tests')).AddArgument($pesterModule.Path)
         $testResults = @($testPipeline.Invoke())
         if ($testPipeline.HadErrors -or -not $testResults.Count) { throw ('Windows test execution failed: ' + (@($testPipeline.Streams.Error) -join '; ')) }
         $testSummary = $testResults[-1]

@@ -75,3 +75,21 @@ stale evidence rejection; acceptance/rollback; real native dialog and packaged r
 - Compiled model dialog, packaged activation/restart and final ZIP/hash audit passed.
 - Detailed proof, exact current source hashes and the full-live-versus-final-preflight boundary are recorded in build/model-management-verification.md and .json.
 - External public-release gates remain open in ROADMAP.md. No owner default, scheduled task, commit or public release was changed.
+
+# Current-product web demos (2026-10-18)
+
+19. Audit the live Pages demo, current product evidence and portfolio contracts. **Complete.**
+20. Replace the historical demo with an accessible, responsive, self-contained workflow simulation and current product landing page. **Complete.**
+21. Integrate a compact edition into the portfolio with dated evidence and intake records. **Complete locally.**
+22. Verify browser interactions, responsive layouts, portfolio validation/build and publish the scoped Pages update where authenticated access permits. **Complete: Pages deployment succeeded; public HTML/CSS/JS/overview match the verified files. Portfolio integration remains local, not deployed.**
+
+## Presentation design
+- Visual thesis: a quiet navy editorial frame around a warm, legible working surface; precise blue accents, generous typography and actual desktop captures as proof.
+- Content: short product proposition -> interactive Refine / Review / Answer workspace -> model decision explorer -> actual screenshots and dated release boundaries -> source/documentation CTA.
+- Interaction thesis: short entrance reveal; state transitions for workflow steps; deliberate hover/focus feedback. Respect reduced motion. No pretend streaming, API calls, or paid actions.
+- Browser examples are curated synthetic illustrations, labeled throughout. Model comparison figures come from recorded live synthetic tests with their exact-source limitation. Native Windows remains the actual product.
+- Portfolio edition uses the same demo assets, relative local resources, no backend/auth/external resources, and a compact embed layout. Preserve existing work in both checkouts.
+
+23. Fix the saved-key module-loading failure reported during demo work; reproduce in the packaged host, test both discovery entry points, rebuild and update current evidence. **Complete: 66 native tests, packaged startup and both actual EXE discovery buttons passed.**
+
+24. Repair build-tool discovery across Windows PowerShell and PowerShell 7 module folders without upgrading the pinned compiler. Resolve Pester in the same clean host, clarify setup/error instructions, test isolated discovery and regenerate the EXE. **Complete: clean Windows PowerShell found zero modules via ordinary lookup, resolved the installed 1.0.17/Pester manifests, passed 69 native tests and packaged startup; module path unchanged.**
